@@ -38,6 +38,7 @@
 	import { WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
 	import i18n, { initI18n, getLanguages, changeLanguage } from '$lib/i18n';
 	import { bestMatchingLanguage } from '$lib/utils';
+	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { initScrollbarAutohide } from '$lib/utils/scrollbars';
 	import { setTextScale } from '$lib/utils/text-scale';
 	import { getAllTags, getChatList } from '$lib/apis/chats';
@@ -58,6 +59,9 @@
 	const BREAKPOINT = 768;
 
 	$: setTextScale($settings?.textScale ?? 1);
+
+	const formatError = (error) =>
+		localizeCommonError(error, (key, options) => $i18n.t(key, options));
 
 	const normalizeTheme = (rawTheme) => {
 		if (rawTheme === 'system' || rawTheme === 'dark' || rawTheme === 'light') return rawTheme;
@@ -579,7 +583,7 @@
 				if (localStorage.token) {
 					// Get Session User Info
 					const sessionUser = await getSessionUser(localStorage.token).catch((error) => {
-						toast.error(`${error}`);
+						toast.error(formatError(error));
 						return null;
 					});
 

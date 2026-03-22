@@ -22,6 +22,7 @@
 	} from '$lib/stores';
 	import { toast } from 'svelte-sonner';
 	import { capitalizeFirstLetter, sanitizeResponseContent, splitStream } from '$lib/utils';
+	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import {
 		getTemporaryChatNavigationPath,
@@ -38,6 +39,11 @@
 
 	const i18n = getContext('i18n');
 	const dispatch = createEventDispatcher();
+
+	const formatError = (error: unknown) =>
+		localizeCommonError(error, (key, options) => $i18n.t(key, options));
+
+	const showError = (error: unknown) => toast.error(formatError(error));
 
 	export let id = '';
 	export let value = '';
@@ -270,12 +276,16 @@
 			return;
 		}
 
-		const [res, controller] = await pullModel(localStorage.token, sanitizedModelTag, '0').catch(
+		const pullResult = await pullModel(localStorage.token, sanitizedModelTag, '0').catch(
 			(error) => {
-				toast.error(`${error}`);
+				showError(error);
 				return null;
 			}
 		);
+		if (!pullResult) {
+			return;
+		}
+		const [res, controller] = pullResult;
 
 		if (res) {
 			const reader = res.body
@@ -348,7 +358,7 @@
 						error = error.message;
 					}
 
-					toast.error(`${error}`);
+					showError(error);
 					// opts.callback({ success: false, error, modelName: opts.modelName });
 					break;
 				}

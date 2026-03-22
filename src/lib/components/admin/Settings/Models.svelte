@@ -70,8 +70,12 @@
 				model: ModelLike;
 		  };
 
+	const modelListCollator = new Intl.Collator(undefined, {
+		numeric: true,
+		sensitivity: 'base'
+	});
 
-	let models: ModelLike[] | null = null;
+	let models: ModelLike[] = [];
 	let workspaceModels: any[] | null = null;
 	let baseModels: any[] | null = null;
 
@@ -85,6 +89,9 @@
 
 	let showConfigModal = false;
 	let showManageModal = false;
+	let listLoading = false;
+	let hasLoadedList = false;
+	let listLoadError = '';
 
 
 	let searchValue = '';
@@ -115,6 +122,25 @@
 		return 'other';
 	};
 
+	const getListConnectionName = (m: any) =>
+		(m?.connection_name ?? getModelConnectionName(m) ?? m?.owned_by ?? 'Unknown').toString();
+
+	const decorateModelForList = (m: any) => {
+		const displayName = (getModelChatDisplayName(m) ?? m?.name ?? m?.id ?? '').toString();
+		const connectionName = getListConnectionName(m);
+		const originalId = (m?.originalId ?? m?.original_id ?? '').toString();
+		const description = (m?.meta?.description ?? '').toString();
+
+		return {
+			...m,
+			_listConnectionName: connectionName,
+			_listSearchText: [displayName, m?.id ?? '', originalId, description, connectionName]
+				.join('\n')
+				.toLowerCase(),
+			_listSortName: (m?.name ?? m?.id ?? '').toString()
+		};
+	};
+
 	$: tabFilteredModels = selectedTab === 'all'
 		? (models ?? [])
 		: (models ?? []).filter(m => getProviderTab(m) === selectedTab);
@@ -128,9 +154,6 @@
 	$: visibleTabs = (['all', 'openai', 'gemini', 'anthropic', 'ollama', 'other'] as ProviderTab[]).filter(
 		t => t !== 'other' || tabCounts.other > 0
 	);
-
-	const shouldSpanModelTabFullRowOnMobile = (index: number) =>
-		visibleTabs.length % 2 === 1 && index === visibleTabs.length - 1;
 
 	$: if (selectedTab !== prevTab) {
 		prevTab = selectedTab;
@@ -189,42 +212,90 @@
 		(visibilityFilter !== 'all' ? 1 : 0);
 
 	const init = async () => {
-		[workspaceModels, baseModels] = await Promise.all([
-			getBaseModels(localStorage.token),
-			getModels(localStorage.token, null, true)
-		]);
+		listLoading = true;
+		listLoadError = '';
 
-		const wsMap = new Map((workspaceModels ?? []).map((wm: any) => [wm.id, wm]));
-		models =
-			(baseModels ?? []).map((m: any) => {
-				const workspaceModel = wsMap.get(m.id);
-				// Preserve the upstream/provider default display name so the editor can "restore default"
-				// even if the admin has overridden `name` in the workspace model DB.
-				const default_name = m?.name ?? m?.id;
+		try {
+			const [workspaceModelsResult, baseModelsResult] = await Promise.allSettled([
+				getBaseModels(localStorage.token),
+				getModels(localStorage.token, null, true)
+			]);
 
-				if (workspaceModel) {
-					const mergedMeta = { ...(m?.meta ?? {}), ...(workspaceModel?.meta ?? {}) };
+			if (workspaceModelsResult.status === 'fulfilled') {
+				workspaceModels = workspaceModelsResult.value ?? [];
+			} else {
+				console.error('Failed to load workspace model overrides', workspaceModelsResult.reason);
+				listLoadError =
+					listLoadError ||
+					(workspaceModelsResult.reason instanceof Error
+						? workspaceModelsResult.reason.message
+						: String(workspaceModelsResult.reason));
+				if (!hasLoadedList) {
+					workspaceModels = [];
+				}
+			}
+
+			if (baseModelsResult.status === 'fulfilled') {
+				baseModels = baseModelsResult.value ?? [];
+			} else {
+				console.error('Failed to load base models', baseModelsResult.reason);
+				listLoadError =
+					listLoadError ||
+					(baseModelsResult.reason instanceof Error
+						? baseModelsResult.reason.message
+						: String(baseModelsResult.reason));
+				if (!hasLoadedList) {
+					baseModels = [];
+				}
+			}
+
+			if (
+				hasLoadedList &&
+				(workspaceModelsResult.status !== 'fulfilled' || baseModelsResult.status !== 'fulfilled')
+			) {
+				return;
+			}
+
+			const wsMap = new Map((workspaceModels ?? []).map((wm: any) => [wm.id, wm]));
+			let nextModels =
+				(baseModels ?? []).map((m: any) => {
+					const workspaceModel = wsMap.get(m.id);
+					// Preserve the upstream/provider default display name so the editor can "restore default"
+					// even if the admin has overridden `name` in the workspace model DB.
+					const default_name = m?.name ?? m?.id;
+
+					if (workspaceModel) {
+						const mergedMeta = { ...(m?.meta ?? {}), ...(workspaceModel?.meta ?? {}) };
+						return {
+							...m,
+							...workspaceModel,
+							meta: mergedMeta,
+							default_name
+						};
+					}
+
 					return {
 						...m,
-						...workspaceModel,
-						meta: mergedMeta,
-						default_name
+						id: m.id,
+						name: m.name,
+						default_name,
+						is_active: true
 					};
-				}
+				}) ?? [];
 
-				return {
-					...m,
-					id: m.id,
-					name: m.name,
-					default_name,
-					is_active: true
-				};
-			}) ?? [];
+			nextModels = (applyModelIcons(nextModels) ?? nextModels) as any;
+			models = nextModels.map((model) => decorateModelForList(model));
 
-		models = (applyModelIcons(models) ?? models) as any;
-
-		initExpandedGroups();
-		syncSelectedModelFromRoute();
+			initExpandedGroups();
+			syncSelectedModelFromRoute();
+			hasLoadedList = true;
+		} catch (error) {
+			console.error('Failed to initialize model management page', error);
+			listLoadError =
+				error instanceof Error ? error.message : listLoadError || String(error);
+		} finally {
+			listLoading = false;
+		}
 	};
 
 	$: syncSelectedModelFromRoute();
@@ -249,7 +320,7 @@
 			// Small lists: expand everything.
 			expandedGroups = {};
 			for (const m of models) {
-				const key = getModelConnectionName(m) || m?.owned_by || 'Unknown';
+				const key = m?._listConnectionName ?? m?.owned_by ?? 'Unknown';
 				expandedGroups[key] = true;
 			}
 		} else {
@@ -269,21 +340,7 @@
 
 	const matchesSearch = (m: any, q: string): boolean => {
 		if (!q) return true;
-		const query = q.toLowerCase();
-
-		const display = (getModelChatDisplayName(m) ?? '').toString().toLowerCase();
-		const id = (m?.id ?? '').toString().toLowerCase();
-		const originalId = (m?.originalId ?? m?.original_id ?? '').toString().toLowerCase();
-		const desc = (m?.meta?.description ?? '').toString().toLowerCase();
-		const connection = (getModelConnectionName(m) ?? '').toString().toLowerCase();
-
-		return (
-			display.includes(query) ||
-			id.includes(query) ||
-			originalId.includes(query) ||
-			desc.includes(query) ||
-			connection.includes(query)
-		);
+		return (m?._listSearchText ?? '').includes(q.toLowerCase());
 	};
 
 	$: if (Array.isArray(tabFilteredModels)) {
@@ -305,11 +362,15 @@
 				return true;
 			})
 			.sort((a, b) => {
-				const ca = (getModelConnectionName(a) ?? a?.owned_by ?? 'Unknown').toString();
-				const cb = (getModelConnectionName(b) ?? b?.owned_by ?? 'Unknown').toString();
-				const diff = ca.localeCompare(cb);
+				const diff = modelListCollator.compare(
+					a?._listConnectionName ?? 'Unknown',
+					b?._listConnectionName ?? 'Unknown'
+				);
 				if (diff !== 0) return diff;
-				return (a?.name ?? a?.id ?? '').localeCompare(b?.name ?? b?.id ?? '');
+				return modelListCollator.compare(
+					a?._listSortName ?? a?.id ?? '',
+					b?._listSortName ?? b?.id ?? ''
+				);
 			});
 	} else {
 		filteredModels = [];
@@ -325,7 +386,7 @@
 		// --- Build grouped, groupKeys, rows in one pass to avoid reactive cascade ---
 		const _grouped = new Map<string, { name: string; models: any[] }>();
 		for (const m of filteredModels) {
-			const rawKey = getModelConnectionName(m) || m?.owned_by || 'Unknown';
+			const rawKey = m?._listConnectionName ?? m?.owned_by ?? 'Unknown';
 			const key = rawKey.toString();
 			const entry = _grouped.get(key) ?? { name: key, models: [] as any[] };
 			entry.models.push(m);
@@ -618,27 +679,26 @@
 </script>
 
 <svelte:head>
-	<title>{$i18n.t('Models')} | {$WEBUI_NAME}</title>
+	<title>{$i18n.t('Model Management')} | {$WEBUI_NAME}</title>
 </svelte:head>
 
 <ConfigureModelsModal bind:show={showConfigModal} initHandler={init} />
 <ManageModelsModal bind:show={showManageModal} />
 
 <div class="max-w-6xl mx-auto w-full h-full">
-	{#if models !== null}
-		{#if selectedModelId === null}
+	{#if selectedModelId === null}
 			<div class="h-full space-y-6 overflow-y-auto scrollbar-hidden">
 				<div class="max-w-6xl mx-auto space-y-6">
 					<!-- ==================== Hero Section ==================== -->
 					<section class="glass-section p-5 space-y-5">
-						<div class="flex flex-col gap-5">
-							<div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-								<div class="min-w-0">
+						<div class="@container flex flex-col gap-5">
+							<div class="flex flex-col gap-4 @[64rem]:flex-row @[64rem]:items-start @[64rem]:justify-between">
+								<div class="min-w-0 @[64rem]:flex-1">
 									<!-- Breadcrumb -->
 									<div class="inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-full border border-gray-200/80 bg-white/80 px-3.5 text-xs font-medium leading-none text-gray-600 dark:border-gray-700/80 dark:bg-gray-900/70 dark:text-gray-300">
 										<span class="leading-none text-gray-400 dark:text-gray-500">{$i18n.t('Settings')}</span>
 										<span class="leading-none text-gray-300 dark:text-gray-600">/</span>
-										<span class="leading-none text-gray-900 dark:text-white">{$i18n.t('模型管理')}</span>
+										<span class="leading-none text-gray-900 dark:text-white">{$i18n.t('Model Management')}</span>
 									</div>
 
 									<!-- Icon badge + title + description -->
@@ -686,50 +746,46 @@
 										</div>
 									</div>
 								</div>
-
+								<div class="inline-flex max-w-full flex-wrap items-center gap-2 self-start rounded-2xl bg-gray-100 p-1 dark:bg-gray-850 @[64rem]:ml-auto @[64rem]:mt-11 @[64rem]:flex-nowrap @[64rem]:justify-end @[64rem]:shrink-0">
+									{#each visibleTabs as tab}
+										<button
+											type="button"
+											class={`flex min-w-0 items-center justify-start gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-medium transition-all ${selectedTab === tab ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+											on:click={() => { selectedTab = tab; }}
+										>
+											{#if tab === 'all'}
+												<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
+													<path stroke-linecap="round" stroke-linejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+												</svg>
+											{:else if tab === 'openai'}
+												<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
+													<path d="M21.55 10.004a5.416 5.416 0 00-.478-4.501c-1.217-2.09-3.662-3.166-6.05-2.66A5.59 5.59 0 0010.831 1C8.39.995 6.224 2.546 5.473 4.838A5.553 5.553 0 001.76 7.496a5.487 5.487 0 00.691 6.5 5.416 5.416 0 00.477 4.502c1.217 2.09 3.662 3.165 6.05 2.66A5.586 5.586 0 0013.168 23c2.443.006 4.61-1.546 5.361-3.84a5.553 5.553 0 003.715-2.66 5.488 5.488 0 00-.693-6.497v.001zm-8.381 11.558a4.199 4.199 0 01-2.675-.954c.034-.018.093-.05.132-.074l4.44-2.53a.71.71 0 00.364-.623v-6.176l1.877 1.069c.02.01.033.029.036.05v5.115c-.003 2.274-1.87 4.118-4.174 4.123zM4.192 17.78a4.059 4.059 0 01-.498-2.763c.032.02.09.055.131.078l4.44 2.53c.225.13.504.13.73 0l5.42-3.088v2.138a.068.068 0 01-.027.057L9.9 19.288c-1.999 1.136-4.552.46-5.707-1.51h-.001zM3.023 8.216A4.15 4.15 0 015.198 6.41l-.002.151v5.06a.711.711 0 00.364.624l5.42 3.087-1.876 1.07a.067.067 0 01-.063.005l-4.489-2.559c-1.995-1.14-2.679-3.658-1.53-5.63h.001zm15.417 3.54l-5.42-3.088L14.896 7.6a.067.067 0 01.063-.006l4.489 2.557c1.998 1.14 2.683 3.662 1.529 5.633a4.163 4.163 0 01-2.174 1.807V12.38a.71.71 0 00-.363-.623zm1.867-2.773a6.04 6.04 0 00-.132-.078l-4.44-2.53a.731.731 0 00-.729 0l-5.42 3.088V7.325a.068.068 0 01.027-.057L14.1 4.713c2-1.137 4.555-.46 5.707 1.513.487.833.664 1.809.499 2.757h.001zm-11.741 3.81l-1.877-1.068a.065.065 0 01-.036-.051V6.559c.001-2.277 1.873-4.122 4.181-4.12.976 0 1.92.338 2.671.954-.034.018-.092.05-.131.073l-4.44 2.53a.71.71 0 00-.365.623l-.003 6.173v.002zm1.02-2.168L12 9.25l2.414 1.375v2.75L12 14.75l-2.415-1.375v-2.75z"/>
+												</svg>
+											{:else if tab === 'gemini'}
+												<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
+													<path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
+													<path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+													<path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+													<path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+												</svg>
+											{:else if tab === 'anthropic'}
+												<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
+													<path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.443-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/>
+												</svg>
+											{:else if tab === 'ollama'}
+												<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
+													<path d="M7.905 1.09c.216.085.411.225.588.41.295.306.544.744.734 1.263.191.522.315 1.1.362 1.68a5.054 5.054 0 012.049-.636l.051-.004c.87-.07 1.73.087 2.48.474.101.053.2.11.297.17.05-.569.172-1.134.36-1.644.19-.52.439-.957.733-1.264a1.67 1.67 0 01.589-.41c.257-.1.53-.118.796-.042.401.114.745.368 1.016.737.248.337.434.769.561 1.287.23.934.27 2.163.115 3.645l.053.04.026.019c.757.576 1.284 1.397 1.563 2.35.435 1.487.216 3.155-.534 4.088l-.018.021.002.003c.417.762.67 1.567.724 2.4l.002.03c.064 1.065-.2 2.137-.814 3.19l-.007.01.01.024c.472 1.157.62 2.322.438 3.486l-.006.039a.651.651 0 01-.747.536.648.648 0 01-.54-.742c.167-1.033.01-2.069-.48-3.123a.643.643 0 01.04-.617l.004-.006c.604-.924.854-1.83.8-2.72-.046-.779-.325-1.544-.8-2.273a.644.644 0 01.18-.886l.009-.006c.243-.159.467-.565.58-1.12a4.229 4.229 0 00-.095-1.974c-.205-.7-.58-1.284-1.105-1.683-.595-.454-1.383-.673-2.38-.61a.653.653 0 01-.632-.371c-.314-.665-.772-1.141-1.343-1.436a3.288 3.288 0 00-1.772-.332c-1.245.099-2.343.801-2.67 1.686a.652.652 0 01-.61.425c-1.067.002-1.893.252-2.497.703-.522.39-.878.935-1.066 1.588a4.07 4.07 0 00-.068 1.886c.112.558.331 1.02.582 1.269l.008.007c.212.207.257.53.109.785-.36.622-.629 1.549-.673 2.44-.05 1.018.186 1.902.719 2.536l.016.019a.643.643 0 01.095.69c-.576 1.236-.753 2.252-.562 3.052a.652.652 0 01-1.269.298c-.243-1.018-.078-2.184.473-3.498l.014-.035-.008-.012a4.339 4.339 0 01-.598-1.309l-.005-.019a5.764 5.764 0 01-.177-1.785c.044-.91.278-1.842.622-2.59l.012-.026-.002-.002c-.293-.418-.51-.953-.63-1.545l-.005-.024a5.352 5.352 0 01.093-2.49c.262-.915.777-1.701 1.536-2.269.06-.045.123-.09.186-.132-.159-1.493-.119-2.73.112-3.67.127-.518.314-.95.562-1.287.27-.368.614-.622 1.015-.737.266-.076.54-.059.797.042zm4.116 9.09c.936 0 1.8.313 2.446.855.63.527 1.005 1.235 1.005 1.94 0 .888-.406 1.58-1.133 2.022-.62.375-1.451.557-2.403.557-1.009 0-1.871-.259-2.493-.734-.617-.47-.963-1.13-.963-1.845 0-.707.398-1.417 1.056-1.946.668-.537 1.55-.849 2.485-.849zm0 .896a3.07 3.07 0 00-1.916.65c-.461.37-.722.835-.722 1.25 0 .428.21.829.61 1.134.455.347 1.124.548 1.943.548.799 0 1.473-.147 1.932-.426.463-.28.7-.686.7-1.257 0-.423-.246-.89-.683-1.256-.484-.405-1.14-.643-1.864-.643zm.662 1.21l.004.004c.12.151.095.37-.056.49l-.292.23v.446a.375.375 0 01-.376.373.375.375 0 01-.376-.373v-.46l-.271-.218a.347.347 0 01-.052-.49.353.353 0 01.494-.051l.215.172.22-.174a.353.353 0 01.49.051zm-5.04-1.919c.478 0 .867.39.867.871a.87.87 0 01-.868.871.87.87 0 01-.867-.87.87.87 0 01.867-.872zm8.706 0c.48 0 .868.39.868.871a.87.87 0 01-.868.871.87.87 0 01-.867-.87.87.87 0 01.867-.872zM7.44 2.3l-.003.002a.659.659 0 00-.285.238l-.005.006c-.138.189-.258.467-.348.832-.17.692-.216 1.631-.124 2.782.43-.128.899-.208 1.404-.237l.01-.001.019-.034c.046-.082.095-.161.148-.239.123-.771.022-1.692-.253-2.444-.134-.364-.297-.65-.453-.813a.628.628 0 00-.107-.09L7.44 2.3zm9.174.04l-.002.001a.628.628 0 00-.107.09c-.156.163-.32.45-.453.814-.29.794-.387 1.776-.23 2.572l.058.097.008.014h.03a5.184 5.184 0 011.466.212c.086-1.124.038-2.043-.128-2.722-.09-.365-.21-.643-.349-.832l-.004-.006a.659.659 0 00-.285-.239h-.004z"/>
+												</svg>
+											{:else}
+												<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
+													<path stroke-linecap="round" stroke-linejoin="round" d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 0 1-.657.643 48.491 48.491 0 0 1-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 0 1-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 0 0-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 0 1-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 0 0 .657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 0 1-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 0 0 5.427-.63 48.05 48.05 0 0 0 .582-4.717.532.532 0 0 0-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.96.401v0a.656.656 0 0 0 .658-.663 48.422 48.422 0 0 0-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 0 1-.61-.58v0Z" />
+												</svg>
+											{/if}
+											<span class="min-w-0 truncate">{$i18n.t(tabMeta[tab].label)}</span>
+										</button>
+									{/each}
+								</div>
 							</div>
-						</div>
-
-						<!-- Tab buttons -->
-						<div class="grid w-full grid-cols-2 rounded-2xl bg-gray-100 p-1 dark:bg-gray-850 md:inline-flex md:w-fit md:flex-col lg:flex-row">
-							{#each visibleTabs as tab, index}
-								<button
-									type="button"
-									class={`flex min-w-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all ${shouldSpanModelTabFullRowOnMobile(index) ? 'col-span-2 md:col-span-1' : ''} ${selectedTab === tab ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
-									on:click={() => { selectedTab = tab; }}
-								>
-									{#if tab === 'all'}
-										<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
-											<path stroke-linecap="round" stroke-linejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
-										</svg>
-									{:else if tab === 'openai'}
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
-											<path d="M21.55 10.004a5.416 5.416 0 00-.478-4.501c-1.217-2.09-3.662-3.166-6.05-2.66A5.59 5.59 0 0010.831 1C8.39.995 6.224 2.546 5.473 4.838A5.553 5.553 0 001.76 7.496a5.487 5.487 0 00.691 6.5 5.416 5.416 0 00.477 4.502c1.217 2.09 3.662 3.165 6.05 2.66A5.586 5.586 0 0013.168 23c2.443.006 4.61-1.546 5.361-3.84a5.553 5.553 0 003.715-2.66 5.488 5.488 0 00-.693-6.497v.001zm-8.381 11.558a4.199 4.199 0 01-2.675-.954c.034-.018.093-.05.132-.074l4.44-2.53a.71.71 0 00.364-.623v-6.176l1.877 1.069c.02.01.033.029.036.05v5.115c-.003 2.274-1.87 4.118-4.174 4.123zM4.192 17.78a4.059 4.059 0 01-.498-2.763c.032.02.09.055.131.078l4.44 2.53c.225.13.504.13.73 0l5.42-3.088v2.138a.068.068 0 01-.027.057L9.9 19.288c-1.999 1.136-4.552.46-5.707-1.51h-.001zM3.023 8.216A4.15 4.15 0 015.198 6.41l-.002.151v5.06a.711.711 0 00.364.624l5.42 3.087-1.876 1.07a.067.067 0 01-.063.005l-4.489-2.559c-1.995-1.14-2.679-3.658-1.53-5.63h.001zm15.417 3.54l-5.42-3.088L14.896 7.6a.067.067 0 01.063-.006l4.489 2.557c1.998 1.14 2.683 3.662 1.529 5.633a4.163 4.163 0 01-2.174 1.807V12.38a.71.71 0 00-.363-.623zm1.867-2.773a6.04 6.04 0 00-.132-.078l-4.44-2.53a.731.731 0 00-.729 0l-5.42 3.088V7.325a.068.068 0 01.027-.057L14.1 4.713c2-1.137 4.555-.46 5.707 1.513.487.833.664 1.809.499 2.757h.001zm-11.741 3.81l-1.877-1.068a.065.065 0 01-.036-.051V6.559c.001-2.277 1.873-4.122 4.181-4.12.976 0 1.92.338 2.671.954-.034.018-.092.05-.131.073l-4.44 2.53a.71.71 0 00-.365.623l-.003 6.173v.002zm1.02-2.168L12 9.25l2.414 1.375v2.75L12 14.75l-2.415-1.375v-2.75z"/>
-										</svg>
-									{:else if tab === 'gemini'}
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
-											<path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
-											<path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-											<path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
-											<path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-										</svg>
-									{:else if tab === 'anthropic'}
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
-											<path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.443-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/>
-										</svg>
-									{:else if tab === 'ollama'}
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-4">
-											<path d="M7.905 1.09c.216.085.411.225.588.41.295.306.544.744.734 1.263.191.522.315 1.1.362 1.68a5.054 5.054 0 012.049-.636l.051-.004c.87-.07 1.73.087 2.48.474.101.053.2.11.297.17.05-.569.172-1.134.36-1.644.19-.52.439-.957.733-1.264a1.67 1.67 0 01.589-.41c.257-.1.53-.118.796-.042.401.114.745.368 1.016.737.248.337.434.769.561 1.287.23.934.27 2.163.115 3.645l.053.04.026.019c.757.576 1.284 1.397 1.563 2.35.435 1.487.216 3.155-.534 4.088l-.018.021.002.003c.417.762.67 1.567.724 2.4l.002.03c.064 1.065-.2 2.137-.814 3.19l-.007.01.01.024c.472 1.157.62 2.322.438 3.486l-.006.039a.651.651 0 01-.747.536.648.648 0 01-.54-.742c.167-1.033.01-2.069-.48-3.123a.643.643 0 01.04-.617l.004-.006c.604-.924.854-1.83.8-2.72-.046-.779-.325-1.544-.8-2.273a.644.644 0 01.18-.886l.009-.006c.243-.159.467-.565.58-1.12a4.229 4.229 0 00-.095-1.974c-.205-.7-.58-1.284-1.105-1.683-.595-.454-1.383-.673-2.38-.61a.653.653 0 01-.632-.371c-.314-.665-.772-1.141-1.343-1.436a3.288 3.288 0 00-1.772-.332c-1.245.099-2.343.801-2.67 1.686a.652.652 0 01-.61.425c-1.067.002-1.893.252-2.497.703-.522.39-.878.935-1.066 1.588a4.07 4.07 0 00-.068 1.886c.112.558.331 1.02.582 1.269l.008.007c.212.207.257.53.109.785-.36.622-.629 1.549-.673 2.44-.05 1.018.186 1.902.719 2.536l.016.019a.643.643 0 01.095.69c-.576 1.236-.753 2.252-.562 3.052a.652.652 0 01-1.269.298c-.243-1.018-.078-2.184.473-3.498l.014-.035-.008-.012a4.339 4.339 0 01-.598-1.309l-.005-.019a5.764 5.764 0 01-.177-1.785c.044-.91.278-1.842.622-2.59l.012-.026-.002-.002c-.293-.418-.51-.953-.63-1.545l-.005-.024a5.352 5.352 0 01.093-2.49c.262-.915.777-1.701 1.536-2.269.06-.045.123-.09.186-.132-.159-1.493-.119-2.73.112-3.67.127-.518.314-.95.562-1.287.27-.368.614-.622 1.015-.737.266-.076.54-.059.797.042zm4.116 9.09c.936 0 1.8.313 2.446.855.63.527 1.005 1.235 1.005 1.94 0 .888-.406 1.58-1.133 2.022-.62.375-1.451.557-2.403.557-1.009 0-1.871-.259-2.493-.734-.617-.47-.963-1.13-.963-1.845 0-.707.398-1.417 1.056-1.946.668-.537 1.55-.849 2.485-.849zm0 .896a3.07 3.07 0 00-1.916.65c-.461.37-.722.835-.722 1.25 0 .428.21.829.61 1.134.455.347 1.124.548 1.943.548.799 0 1.473-.147 1.932-.426.463-.28.7-.686.7-1.257 0-.423-.246-.89-.683-1.256-.484-.405-1.14-.643-1.864-.643zm.662 1.21l.004.004c.12.151.095.37-.056.49l-.292.23v.446a.375.375 0 01-.376.373.375.375 0 01-.376-.373v-.46l-.271-.218a.347.347 0 01-.052-.49.353.353 0 01.494-.051l.215.172.22-.174a.353.353 0 01.49.051zm-5.04-1.919c.478 0 .867.39.867.871a.87.87 0 01-.868.871.87.87 0 01-.867-.87.87.87 0 01.867-.872zm8.706 0c.48 0 .868.39.868.871a.87.87 0 01-.868.871.87.87 0 01-.867-.87.87.87 0 01.867-.872zM7.44 2.3l-.003.002a.659.659 0 00-.285.238l-.005.006c-.138.189-.258.467-.348.832-.17.692-.216 1.631-.124 2.782.43-.128.899-.208 1.404-.237l.01-.001.019-.034c.046-.082.095-.161.148-.239.123-.771.022-1.692-.253-2.444-.134-.364-.297-.65-.453-.813a.628.628 0 00-.107-.09L7.44 2.3zm9.174.04l-.002.001a.628.628 0 00-.107.09c-.156.163-.32.45-.453.814-.29.794-.387 1.776-.23 2.572l.058.097.008.014h.03a5.184 5.184 0 011.466.212c.086-1.124.038-2.043-.128-2.722-.09-.365-.21-.643-.349-.832l-.004-.006a.659.659 0 00-.285-.239h-.004z"/>
-										</svg>
-									{:else}
-										<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
-											<path stroke-linecap="round" stroke-linejoin="round" d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 0 1-.657.643 48.491 48.491 0 0 1-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 0 1-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 0 0-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 0 1-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 0 0 .657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 0 1-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 0 0 5.427-.63 48.05 48.05 0 0 0 .582-4.717.532.532 0 0 0-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.96.401v0a.656.656 0 0 0 .658-.663 48.422 48.422 0 0 0-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 0 1-.61-.58v0Z" />
-										</svg>
-									{/if}
-									<span class="min-w-0 truncate">{$i18n.t(tabMeta[tab].label)}</span>
-									<span class="text-[10px] opacity-60">{tabCounts[tab]}</span>
-								</button>
-							{/each}
 						</div>
 					</section>
 
@@ -1020,108 +1076,127 @@
 
 					<!-- ==================== Model List ==================== -->
 					<section class="glass-section p-4">
+						{#if listLoading && hasLoadedList}
+							<div class="mb-3 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+								<Spinner className="size-3.5" />
+								<span>{$i18n.t('Loading...')}</span>
+							</div>
+						{/if}
+						{#if listLoadError}
+							<div class="mb-3 rounded-xl border border-amber-200/70 bg-amber-50/80 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/15 dark:text-amber-300">
+								{listLoadError}
+							</div>
+						{/if}
 						<div
 							class="min-h-[320px] overflow-y-auto scrollbar-hidden"
 							bind:this={listContainerEl}
 							id="admin-models-list"
 							data-rows={rows.length}
-					data-height={listHeight}
-				>
-					{#if filteredModels.length === 0}
-						<div class="flex flex-col items-center justify-center w-full h-24">
-							<div class="text-gray-500 dark:text-gray-400 text-xs">
-								{$i18n.t('No models found')}
-							</div>
-						</div>
-					{:else}
-							<div class="flex flex-col py-1">
-								{#each rows as item}
-									{#if item.type === 'group'}
-										{@const groupModel = (grouped.get(item.key)?.models ?? [])[0]}
-										{@const groupIds = getGroupModelIds(item.key)}
-										{@const selectedInGroup = groupIds.filter(id => selectedIds.has(id)).length}
-										<div class="px-2 py-1.5">
-											<div
-												class="flex items-center justify-between gap-2 w-full px-3 py-2 rounded-xl border border-gray-200/60 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/30 hover:bg-gray-100/60 dark:hover:bg-gray-900/40 transition cursor-pointer"
-												on:click={() => toggleGroupExpanded(item.key)}
-												role="button"
-												tabindex="0"
-												on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleGroupExpanded(item.key); }}
-											>
-												<div class="flex items-center gap-2 min-w-0">
-													{#if selectMode}
-													<!-- svelte-ignore a11y-click-events-have-key-events -->
-													<input
-														type="checkbox"
-														class="accent-emerald-600"
-														checked={selectedInGroup === item.count && item.count > 0}
-														on:change|stopPropagation={() => toggleSelectGroup(item.key)}
-														on:click|stopPropagation
-														title={$i18n.t('Select')}
-													/>
-													{/if}
-
-													{#if groupModel?.connection_icon}
-														<ModelIcon
-															src={groupModel.connection_icon}
-															alt="connection icon"
-															className="rounded-xl size-7 shrink-0"
+							data-height={listHeight}
+							aria-busy={listLoading}
+						>
+							{#if listLoading && !hasLoadedList}
+								<div class="flex h-40 w-full items-center justify-center">
+									<div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+										<Spinner />
+										<span>{$i18n.t('Loading...')}</span>
+									</div>
+								</div>
+							{:else if filteredModels.length === 0}
+								<div class="flex flex-col items-center justify-center w-full h-24">
+									<div class="text-gray-500 dark:text-gray-400 text-xs">
+										{$i18n.t('No models found')}
+									</div>
+								</div>
+							{:else}
+								<div class="flex flex-col py-1">
+									{#each rows as item}
+										{#if item.type === 'group'}
+											{@const groupModel = (grouped.get(item.key)?.models ?? [])[0]}
+											{@const groupIds = getGroupModelIds(item.key)}
+											{@const selectedInGroup = groupIds.filter(id => selectedIds.has(id)).length}
+											<div class="px-2 py-1.5">
+												<div
+													class="flex items-center justify-between gap-2 w-full px-3 py-2 rounded-xl border border-gray-200/60 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/30 hover:bg-gray-100/60 dark:hover:bg-gray-900/40 transition cursor-pointer"
+													on:click={() => toggleGroupExpanded(item.key)}
+													role="button"
+													tabindex="0"
+													on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleGroupExpanded(item.key); }}
+												>
+													<div class="flex items-center gap-2 min-w-0">
+														{#if selectMode}
+														<!-- svelte-ignore a11y-click-events-have-key-events -->
+														<input
+															type="checkbox"
+															class="accent-emerald-600"
+															checked={selectedInGroup === item.count && item.count > 0}
+															on:change|stopPropagation={() => toggleSelectGroup(item.key)}
+															on:click|stopPropagation
+															title={$i18n.t('Select')}
 														/>
-													{:else}
-														<LetterAvatar name={item.name} size="size-7" />
-													{/if}
+														{/if}
 
-													<span class="font-semibold truncate max-w-[40vw]">
-														{item.name === 'Unknown' ? $i18n.t('Unknown') : item.name}
-													</span>
+														{#if groupModel?.connection_icon}
+															<ModelIcon
+																src={groupModel.connection_icon}
+																alt="connection icon"
+																className="rounded-xl size-7 shrink-0"
+															/>
+														{:else}
+															<LetterAvatar name={item.name} size="size-7" />
+														{/if}
 
-													<span
-														class="text-xs text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-lg bg-gray-100/80 dark:bg-gray-800/60 shrink-0"
-													>
-														{item.count}
-													</span>
+														<span class="font-semibold truncate max-w-[40vw]">
+															{item.name === 'Unknown' ? $i18n.t('Unknown') : item.name}
+														</span>
 
-													{#if selectedInGroup > 0}
 														<span
-															class="text-xs text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/25 shrink-0"
+															class="text-xs text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-lg bg-gray-100/80 dark:bg-gray-800/60 shrink-0"
 														>
-															{$i18n.t('Selected: {{count}}', { count: selectedInGroup })}
+															{item.count}
 														</span>
-													{/if}
-												</div>
 
-												<div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0">
-													<!-- Only show deviation states -->
-													{#if item.enabledCount < item.count}
-														<span class="text-amber-600 dark:text-amber-400" title={$i18n.t('Disabled')}>
-															{item.count - item.enabledCount} {$i18n.t('Disabled')}
-														</span>
-													{/if}
+														{#if selectedInGroup > 0}
+															<span
+																class="text-xs text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/25 shrink-0"
+															>
+																{$i18n.t('Selected: {{count}}', { count: selectedInGroup })}
+															</span>
+														{/if}
+													</div>
 
-													{#if item.hiddenCount > 0}
-														<span title={$i18n.t('Hidden')}>
-															{item.hiddenCount} {$i18n.t('Hidden')}
-														</span>
-													{/if}
+													<div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0">
+														<!-- Only show deviation states -->
+														{#if item.enabledCount < item.count}
+															<span class="text-amber-600 dark:text-amber-400" title={$i18n.t('Disabled')}>
+																{item.count - item.enabledCount} {$i18n.t('Disabled')}
+															</span>
+														{/if}
 
-													{#if item.publicCount > 0 && item.privateCount > 0}
-														<span class="text-blue-600 dark:text-blue-400" title={$i18n.t('Public')}>
-															{item.publicCount} {$i18n.t('Public')}
-														</span>
-														<span class="text-purple-600 dark:text-purple-400" title={$i18n.t('Private')}>
-															{item.privateCount} {$i18n.t('Private')}
-														</span>
-													{/if}
+														{#if item.hiddenCount > 0}
+															<span title={$i18n.t('Hidden')}>
+																{item.hiddenCount} {$i18n.t('Hidden')}
+															</span>
+														{/if}
 
-													<ChevronDown
-														className={`size-4 transition-transform will-change-transform ${expandedGroups[item.key] ? 'rotate-180' : ''}`}
-													/>
+														{#if item.publicCount > 0 && item.privateCount > 0}
+															<span class="text-blue-600 dark:text-blue-400" title={$i18n.t('Public')}>
+																{item.publicCount} {$i18n.t('Public')}
+															</span>
+															<span class="text-purple-600 dark:text-purple-400" title={$i18n.t('Private')}>
+																{item.privateCount} {$i18n.t('Private')}
+															</span>
+														{/if}
+
+														<ChevronDown
+															className={`size-4 transition-transform will-change-transform ${expandedGroups[item.key] ? 'rotate-180' : ''}`}
+														/>
+													</div>
 												</div>
 											</div>
-										</div>
-									{:else}
-										{@const m = item.model}
-										{@const visibility = getVisibilityState(m)}
+										{:else}
+											{@const m = item.model}
+											{@const visibility = getVisibilityState(m)}
 											<div
 												class="flex items-center justify-between gap-3 px-3 py-2 mx-2 pl-10 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition {m
 													?.meta?.hidden
@@ -1215,31 +1290,26 @@
 													</ModelMenu>
 												</div>
 											</div>
-									{/if}
-								{/each}
-							</div>
-					{/if}
-				</div>
+										{/if}
+									{/each}
+								</div>
+							{/if}
+						</div>
 					</section>
 				</div>
 			</div>
-		{:else}
-				<ModelEditor
-					edit
-					model={models.find((m) => m.id === selectedModelId)}
-					preset={false}
-					onSubmit={handleEditorSubmit}
-					onBack={async () => {
-						suppressRouteSelection = true;
-						selectedModelId = null;
-						await clearSelectedModelRoute();
-						suppressRouteSelection = false;
-					}}
-				/>
-		{/if}
 	{:else}
-		<div class="h-full w-full flex justify-center items-center">
-			<Spinner />
-		</div>
+			<ModelEditor
+				edit
+				model={models.find((m) => m.id === selectedModelId)}
+				preset={false}
+				onSubmit={handleEditorSubmit}
+				onBack={async () => {
+					suppressRouteSelection = true;
+					selectedModelId = null;
+					await clearSelectedModelRoute();
+					suppressRouteSelection = false;
+				}}
+			/>
 	{/if}
 </div>

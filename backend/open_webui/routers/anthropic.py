@@ -777,9 +777,12 @@ async def update_config(
     request.app.state.config.ANTHROPIC_API_CONFIGS = normalized_configs
 
     # Clear model cache when config changes
+    from open_webui.utils.models import invalidate_base_model_cache
+
     request.app.state.BASE_MODELS = None
     request.app.state.ANTHROPIC_MODELS = {}
     request.app.state.MODELS = {}
+    invalidate_base_model_cache(user.id)
 
     return await get_config(request, user=user)
 

@@ -80,5 +80,10 @@ export const ensureModels = async (token: string, opts: { reason?: string } = {}
 	const isFresh = current.length > 0 && Date.now() - lastFetchedAt < MODELS_TTL_MS;
 	if (isFresh) return current;
 
+	if (current.length > 0) {
+		void refreshModels(token, { reason: opts.reason }).catch(() => {});
+		return current;
+	}
+
 	return refreshModels(token, { reason: opts.reason });
 };

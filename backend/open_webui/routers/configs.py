@@ -117,7 +117,10 @@ async def set_connections_config(
     if request.app.state.config.ENABLE_BASE_MODELS_CACHE and (
         not prev_cache_enabled or getattr(request.app.state, "BASE_MODELS", None) is None
     ):
+        from open_webui.utils.models import invalidate_base_model_cache
+
         request.app.state.BASE_MODELS = None
+        invalidate_base_model_cache()
         try:
             from open_webui.utils.models import get_all_base_models
 
@@ -257,9 +260,9 @@ async def set_native_tools_config(
         payload.get("MAX_TOOL_CALL_ROUNDS"),
         default=MAX_TOOL_CALL_ROUNDS_DEFAULT,
     )
-    set_user_native_tools_config(user, payload)
+    updated_user = set_user_native_tools_config(user, payload) or user
 
-    return get_user_native_tools_config(request, user)
+    return get_user_native_tools_config(request, updated_user)
 
 
 ############################

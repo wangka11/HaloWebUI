@@ -38,6 +38,7 @@
 
 	onMount(() => {
 		loaded = true;
+		void ensureModels(localStorage.token, { reason: 'settings-layout' }).catch(() => {});
 		if ($user?.role !== 'admin' && $page.url.pathname === '/settings') {
 			goto('/settings/interface');
 		}
@@ -148,7 +149,7 @@
 						>
 					{#if isAdmin}
 						<a class={navLinkClass(activeLinks.models)} href="/settings/models"
-							>{$i18n.t('Models')}</a
+							>{$i18n.t('Model Management')}</a
 						>
 						<a class={navLinkClass(activeLinks.documents)} href="/settings/documents"
 							>{$i18n.t('Documents')}</a

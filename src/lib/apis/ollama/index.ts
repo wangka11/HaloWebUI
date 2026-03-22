@@ -452,16 +452,22 @@ export const pullModel = async (token: string, tagName: string, urlIdx: number |
 		body: JSON.stringify({
 			name: tagName
 		})
-	}).catch((err) => {
-		console.log(err);
-		error = err;
+	})
+		.then(async (res) => {
+			if (!res.ok) {
+				const payload = await res.json().catch(() => ({
+					detail: `${res.status} ${res.statusText}`
+				}));
+				throw payload;
+			}
 
-		if ('detail' in err) {
-			error = err.detail;
-		}
-
-		return null;
-	});
+			return res;
+		})
+		.catch((err) => {
+			console.log(err);
+			error = err?.detail ?? err?.message ?? `${err}`;
+			return null;
+		});
 	if (error) {
 		throw error;
 	}

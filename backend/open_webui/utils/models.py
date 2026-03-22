@@ -20,7 +20,11 @@ from open_webui.utils.access_control import has_access
 
 
 
-from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
+from open_webui.env import (
+    AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST,
+    SRC_LOG_LEVELS,
+    GLOBAL_LOG_LEVEL,
+)
 from open_webui.models.users import UserModel
 
 
@@ -29,35 +33,112 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
 
-# Per-user model cache: {user_id: (timestamp, models)}
+# Per-user base model cache: {user_id: (timestamp, models)}
 _base_model_cache: dict[str, tuple[float, list]] = {}
-_BASE_MODEL_CACHE_TTL = 10  # seconds
+_base_model_refresh_tasks: dict[str, asyncio.Task[list]] = {}
+_BASE_MODEL_CACHE_TTL = 5 * 60  # seconds
+_BASE_MODEL_FETCH_TIMEOUT = (
+    min(float(AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST), 5.0)
+    if isinstance(AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST, (int, float))
+    else 5.0
+)
+
+
+def _get_base_model_cache_key(user: Optional[UserModel]) -> str:
+    return user.id if user else "anon"
+
+
+def _evict_stale_base_model_cache(now: float) -> None:
+    stale_keys = [k for k, (ts, _) in _base_model_cache.items() if now - ts > (_BASE_MODEL_CACHE_TTL * 2)]
+    for k in stale_keys:
+        _base_model_cache.pop(k, None)
+
+
+def invalidate_base_model_cache(user_id: Optional[str] = None) -> None:
+    cache_keys = (
+        [user_id]
+        if user_id
+        else list(set(_base_model_cache.keys()) | set(_base_model_refresh_tasks.keys()))
+    )
+    for cache_key in cache_keys:
+        _base_model_cache.pop(cache_key, None)
+        task = _base_model_refresh_tasks.pop(cache_key, None)
+        if task and not task.done():
+            task.cancel()
+
+
+async def _fetch_source_models(name: str, fetch_coro):
+    try:
+        if _BASE_MODEL_FETCH_TIMEOUT > 0:
+            return await asyncio.wait_for(fetch_coro, timeout=_BASE_MODEL_FETCH_TIMEOUT)
+        return await fetch_coro
+    except asyncio.TimeoutError:
+        log.warning(
+            f"Base models fetch timed out: {name} after {_BASE_MODEL_FETCH_TIMEOUT:.1f}s"
+        )
+    except Exception as e:
+        log.warning(f"Base models fetch failed: {name}: {type(e).__name__}: {e}")
+    return None
+
+
+def _schedule_base_model_refresh(
+    cache_key: str, request: Request, user: Optional[UserModel]
+) -> asyncio.Task[list]:
+    existing = _base_model_refresh_tasks.get(cache_key)
+    if existing and not existing.done():
+        return existing
+
+    async def _runner() -> list:
+        models = await _fetch_all_base_models(request, user=user)
+        now = time.time()
+        _base_model_cache[cache_key] = (now, models)
+        _evict_stale_base_model_cache(now)
+        return models
+
+    task = asyncio.create_task(_runner())
+    _base_model_refresh_tasks[cache_key] = task
+
+    def _finalize(done: asyncio.Task[list]) -> None:
+        if _base_model_refresh_tasks.get(cache_key) is done:
+            _base_model_refresh_tasks.pop(cache_key, None)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.warning(
+                f"Base models background refresh failed: {cache_key}: {type(e).__name__}: {e}"
+            )
+
+    task.add_done_callback(_finalize)
+    return task
 
 
 async def _fetch_all_base_models(request: Request, user: UserModel = None):
     # Base models are now user-scoped (per-user connections). Provider routers return [] when
     # the user has no configured connections for that provider.
-    # Fetch all providers in parallel for better performance.
-    openai_resp, ollama_resp, gemini_resp, anthropic_resp = await asyncio.gather(
-        openai.get_all_models(request, user=user),
-        ollama.get_all_models(request, user=user),
-        gemini.get_all_models(request, user=user),
-        anthropic.get_all_models(request, user=user),
-        return_exceptions=True,
+    # Fetch all providers in parallel and cap individual sources so one slow upstream
+    # does not block the entire settings / model-management UI.
+    openai_resp, ollama_resp, gemini_resp, anthropic_resp, function_models_resp = (
+        await asyncio.gather(
+            _fetch_source_models("openai", openai.get_all_models(request, user=user)),
+            _fetch_source_models("ollama", ollama.get_all_models(request, user=user)),
+            _fetch_source_models("gemini", gemini.get_all_models(request, user=user)),
+            _fetch_source_models(
+                "anthropic", anthropic.get_all_models(request, user=user)
+            ),
+            _fetch_source_models("functions", get_function_models(request)),
+        )
     )
 
     # Process openai
-    if isinstance(openai_resp, Exception):
-        log.warning(f"Base models fetch failed: openai: {type(openai_resp).__name__}: {openai_resp}")
+    if not isinstance(openai_resp, dict):
         openai_models = []
     else:
         openai_models = openai_resp.get("data", []) if isinstance(openai_resp, dict) else []
 
     # Process ollama
-    if isinstance(ollama_resp, Exception):
-        log.warning(f"Base models fetch failed: ollama: {type(ollama_resp).__name__}: {ollama_resp}")
-        ollama_models = []
-    elif isinstance(ollama_resp, dict) and "models" in ollama_resp:
+    if isinstance(ollama_resp, dict) and "models" in ollama_resp:
         ollama_models = [
             {
                 "id": model["model"],
@@ -85,45 +166,45 @@ async def _fetch_all_base_models(request: Request, user: UserModel = None):
         ollama_models = []
 
     # Process gemini
-    if isinstance(gemini_resp, Exception):
-        log.warning(f"Base models fetch failed: gemini: {type(gemini_resp).__name__}: {gemini_resp}")
+    if not isinstance(gemini_resp, dict):
         gemini_models = []
     else:
         gemini_models = gemini_resp.get("data", []) if isinstance(gemini_resp, dict) else []
 
     # Process anthropic
-    if isinstance(anthropic_resp, Exception):
-        log.warning(f"Base models fetch failed: anthropic: {type(anthropic_resp).__name__}: {anthropic_resp}")
+    if not isinstance(anthropic_resp, dict):
         anthropic_models = []
     else:
         anthropic_models = anthropic_resp.get("data", []) if isinstance(anthropic_resp, dict) else []
 
-    function_models = await get_function_models(request)
+    function_models = (
+        function_models_resp if isinstance(function_models_resp, list) else []
+    )
     models = function_models + openai_models + ollama_models + gemini_models + anthropic_models
 
     return models
 
 
 async def get_all_base_models(request: Request, user: UserModel = None):
-    # Per-user short-TTL cache to avoid redundant provider API calls during rapid navigation.
-    # Cache is keyed by user_id (or "anon") and expires after _BASE_MODEL_CACHE_TTL seconds.
-    cache_key = user.id if user else "anon"
+    # Per-user cache + stale-while-revalidate keeps model-aware pages responsive even when
+    # one upstream connection is temporarily slow.
+    cache_enabled = bool(
+        getattr(getattr(request.app.state, "config", None), "ENABLE_BASE_MODELS_CACHE", True)
+    )
+    if not cache_enabled:
+        return await _fetch_all_base_models(request, user=user)
+
+    cache_key = _get_base_model_cache_key(user)
     now = time.time()
     cached = _base_model_cache.get(cache_key)
     if cached:
         ts, models = cached
         if now - ts < _BASE_MODEL_CACHE_TTL:
             return models
+        _schedule_base_model_refresh(cache_key, request, user)
+        return models
 
-    models = await _fetch_all_base_models(request, user=user)
-    _base_model_cache[cache_key] = (now, models)
-
-    # Evict stale entries to prevent memory growth
-    stale_keys = [k for k, (ts, _) in _base_model_cache.items() if now - ts > 120]
-    for k in stale_keys:
-        _base_model_cache.pop(k, None)
-
-    return models
+    return await _schedule_base_model_refresh(cache_key, request, user)
 
 
 async def get_all_models(request, user: UserModel = None):

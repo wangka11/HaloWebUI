@@ -12,6 +12,7 @@
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
 
 	import { generateInitialsImage, canvasPixelTest } from '$lib/utils';
+	import { localizeCommonError } from '$lib/utils/common-errors';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import OnBoarding from '$lib/components/OnBoarding.svelte';
@@ -27,6 +28,9 @@
 	let password = '';
 
 	let ldapUsername = '';
+
+	const formatError = (error) =>
+		localizeCommonError(error, (key, options) => $i18n.t(key, options));
 
 	const querystringValue = (key) => {
 		const querystring = window.location.search;
@@ -53,7 +57,7 @@
 
 	const signInHandler = async () => {
 		const sessionUser = await userSignIn(email, password).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(formatError(error));
 			return null;
 		});
 
@@ -63,7 +67,7 @@
 	const signUpHandler = async () => {
 		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name)).catch(
 			(error) => {
-				toast.error(`${error}`);
+				toast.error(formatError(error));
 				return null;
 			}
 		);
@@ -73,7 +77,7 @@
 
 	const ldapSignInHandler = async () => {
 		const sessionUser = await ldapUserSignIn(ldapUsername, password).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(formatError(error));
 			return null;
 		});
 		await setSessionUser(sessionUser);
@@ -103,7 +107,7 @@
 			return;
 		}
 		const sessionUser = await getSessionUser(token).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(formatError(error));
 			return null;
 		});
 		if (!sessionUser) {

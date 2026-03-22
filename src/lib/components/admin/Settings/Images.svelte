@@ -134,23 +134,84 @@
 		}
 	};
 
-	const getModels = async () => {
+	const getErrorText = (error) => {
+		if (typeof error === 'string') {
+			return error;
+		}
+
+		if (error instanceof Error) {
+			return error.message;
+		}
+
+		if (error && typeof error === 'object') {
+			if ('detail' in error && typeof error.detail === 'string') {
+				return error.detail;
+			}
+
+			if ('message' in error && typeof error.message === 'string') {
+				return error.message;
+			}
+		}
+
+		return `${error ?? ''}`;
+	};
+
+	const isImageEngineConnectionError = (message: string) =>
+		[
+			/HTTPConnectionPool/i,
+			/Max retries exceeded/i,
+			/Failed to establish a new connection/i,
+			/Connection refused/i,
+			/Connection reset/i,
+			/Name or service not known/i,
+			/Temporary failure in name resolution/i,
+			/timed out/i
+		].some((pattern) => pattern.test(message));
+
+	const formatImageSettingsError = (error) => {
+		const message = getErrorText(error).trim();
+
+		if (!message) {
+			return $i18n.t('Connection failed');
+		}
+
+		if (isImageEngineConnectionError(message)) {
+			return $i18n.t(
+				'Connection to the image generation service failed. Please check that the service is running and the URL is reachable.'
+			);
+		}
+
+		return $i18n.t(message);
+	};
+
+	const getModels = async ({
+		afterSave = false,
+		silent = false
+	}: { afterSave?: boolean; silent?: boolean } = {}) => {
 		models = await getImageGenerationModels(localStorage.token).catch((error) => {
-			toast.error(`${error}`);
+			if (!silent) {
+				const message = afterSave
+					? $i18n.t(
+							'Settings were saved, but the model list could not be refreshed. Please check whether the image generation service is running and reachable.'
+						)
+					: formatImageSettingsError(error);
+
+				if (afterSave) {
+					toast.warning(message);
+				} else {
+					toast.error(message);
+				}
+			}
+
 			return null;
 		});
 	};
 
-	const updateConfigHandler = async () => {
-		const res = await updateConfig(localStorage.token, config)
-			.catch((error) => {
-				toast.error(`${error}`);
-				return null;
-			})
-			.catch((error) => {
-				toast.error(`${error}`);
-				return null;
-			});
+	const updateConfigHandler = async ({ refreshModels = true }: { refreshModels?: boolean } = {}) => {
+		const res = await updateConfig(localStorage.token, config).catch((error) => {
+			toast.error(formatImageSettingsError(error));
+			return null;
+		});
 
 		if (res) {
 			config = normalizeLoadedConfig(res);
@@ -166,7 +227,9 @@
 		if (res) {
 			backendConfig.set(await getBackendConfig());
 			if (config.enabled) {
-				getModels();
+				if (refreshModels) {
+					void getModels();
+				}
 			} else {
 				models = null;
 			}
@@ -207,7 +270,7 @@
 		}
 
 		const updatedConfig = await updateConfig(localStorage.token, config).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(formatImageSettingsError(error));
 			loading = false;
 			return null;
 		});
@@ -216,7 +279,7 @@
 			localStorage.token,
 			imageGenerationConfig
 		).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(formatImageSettingsError(error));
 			loading = false;
 			return null;
 		});
@@ -230,14 +293,16 @@
 		imageGenerationConfig = updatedImageGenerationConfig;
 
 		backendConfig.set(await getBackendConfig());
-		if (config.enabled) {
-			getModels();
-		} else {
-			models = null;
-		}
 		await tick();
 		syncBaseline();
 		dispatch('save');
+
+		if (config.enabled) {
+			void getModels({ afterSave: true });
+		} else {
+			models = null;
+		}
+
 		loading = false;
 	};
 
@@ -259,11 +324,11 @@
 			// 并行加载两个独立配置
 			const [res, imageConfigRes] = await Promise.all([
 				getConfig(localStorage.token).catch((error) => {
-					toast.error(`${error}`);
+					toast.error(formatImageSettingsError(error));
 					return null;
 				}),
 				getImageGenerationConfig(localStorage.token).catch((error) => {
-					toast.error(`${error}`);
+					toast.error(formatImageSettingsError(error));
 					return null;
 				})
 			]);
@@ -560,9 +625,9 @@
 										class="px-3 glass-item hover:bg-gray-50 dark:hover:bg-gray-750 text-gray-700 dark:text-gray-300 transition"
 										type="button"
 										on:click={async () => {
-											await updateConfigHandler();
+											await updateConfigHandler({ refreshModels: false });
 											const res = await verifyConfigUrl(localStorage.token).catch((error) => {
-												toast.error(`${error}`);
+												toast.error(formatImageSettingsError(error));
 												return null;
 											});
 											if (res) {
@@ -704,9 +769,9 @@
 										class="px-3 glass-item hover:bg-gray-50 dark:hover:bg-gray-750 text-gray-700 dark:text-gray-300 transition"
 										type="button"
 										on:click={async () => {
-											await updateConfigHandler();
+											await updateConfigHandler({ refreshModels: false });
 											const res = await verifyConfigUrl(localStorage.token).catch((error) => {
-												toast.error(`${error}`);
+												toast.error(formatImageSettingsError(error));
 												return null;
 											});
 											if (res) {

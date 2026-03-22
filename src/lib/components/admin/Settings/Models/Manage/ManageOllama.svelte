@@ -5,6 +5,7 @@
 
 	import { WEBUI_NAME, models, MODEL_DOWNLOAD_POOL, user, config, settings } from '$lib/stores';
 	import { splitStream } from '$lib/utils';
+	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 
 	import {
@@ -66,17 +67,26 @@
 
 	let deleteModelTag = '';
 
+	const formatError = (error: unknown) =>
+		localizeCommonError(error, (key, options) => $i18n.t(key, options));
+
+	const showError = (error: unknown) => toast.error(formatError(error));
+
 	const updateModelsHandler = async () => {
 		for (const model of ollamaModels) {
 			console.log(model);
 
 			updateModelId = model.id;
-			const [res, controller] = await pullModel(localStorage.token, model.id, urlIdx).catch(
+			const pullResult = await pullModel(localStorage.token, model.id, urlIdx).catch(
 				(error) => {
-					toast.error(`${error}`);
+					showError(error);
 					return null;
 				}
 			);
+			if (!pullResult) {
+				continue;
+			}
+			const [res] = pullResult;
 
 			if (res) {
 				const reader = res.body
@@ -145,12 +155,18 @@
 			return;
 		}
 
-		const [res, controller] = await pullModel(localStorage.token, sanitizedModelTag, urlIdx).catch(
+		const pullResult = await pullModel(localStorage.token, sanitizedModelTag, urlIdx).catch(
 			(error) => {
-				toast.error(`${error}`);
+				showError(error);
 				return null;
 			}
 		);
+		if (!pullResult) {
+			modelTag = '';
+			modelTransferring = false;
+			return;
+		}
+		const [res, controller] = pullResult;
 
 		if (res) {
 			const reader = res.body
@@ -223,7 +239,7 @@
 						error = error.message;
 					}
 
-					toast.error(`${error}`);
+					showError(error);
 					// opts.callback({ success: false, error, modelName: opts.modelName });
 				}
 			}
@@ -267,7 +283,7 @@
 				uploadMessage = 'Uploading...';
 
 				fileResponse = await uploadModel(localStorage.token, file, urlIdx).catch((error) => {
-					toast.error(`${error}`);
+					showError(error);
 					return null;
 				});
 			}
@@ -275,7 +291,7 @@
 			uploadProgress = 0;
 			fileResponse = await downloadModel(localStorage.token, modelFileUrl, urlIdx).catch(
 				(error) => {
-					toast.error(`${error}`);
+					showError(error);
 					return null;
 				}
 			);
@@ -322,7 +338,7 @@
 			}
 		} else {
 			const error = await fileResponse?.json();
-			toast.error(error?.detail ?? error);
+			showError(error?.detail ?? error);
 		}
 
 		if (uploaded) {
@@ -381,7 +397,7 @@
 						}
 					} catch (error) {
 						console.log(error);
-						toast.error(`${error}`);
+						showError(error);
 					}
 				}
 			}
@@ -401,7 +417,7 @@
 
 	const deleteModelHandler = async () => {
 		const res = await deleteModel(localStorage.token, deleteModelTag, urlIdx).catch((error) => {
-			toast.error(`${error}`);
+			showError(error);
 		});
 
 		if (res) {
@@ -436,7 +452,7 @@
 		try {
 			modelObject = JSON.parse(createModelObject);
 		} catch (error) {
-			toast.error(`${error}`);
+			showError(error);
 			createModelLoading = false;
 			return;
 		}
@@ -449,7 +465,7 @@
 			},
 			urlIdx
 		).catch((error) => {
-			toast.error(`${error}`);
+			showError(error);
 			return null;
 		});
 
@@ -503,7 +519,7 @@
 					}
 				} catch (error) {
 					console.log(error);
-					toast.error(`${error}`);
+					showError(error);
 				}
 			}
 		}
@@ -521,7 +537,7 @@
 	const init = async () => {
 		loading = true;
 		ollamaModels = await getOllamaModels(localStorage.token, urlIdx).catch((error) => {
-			toast.error(`${error}`);
+			showError(error);
 			return null;
 		});
 

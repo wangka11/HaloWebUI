@@ -1012,9 +1012,12 @@ async def update_config(
     request.app.state.config.GEMINI_API_CONFIGS = normalized_configs
 
     # Clear model cache when config changes
+    from open_webui.utils.models import invalidate_base_model_cache
+
     request.app.state.BASE_MODELS = None
     request.app.state.GEMINI_MODELS = {}
     request.app.state.MODELS = {}
+    invalidate_base_model_cache(user.id)
 
     return {
         "ENABLE_GEMINI_API": request.app.state.config.ENABLE_GEMINI_API,

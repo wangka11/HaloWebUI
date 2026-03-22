@@ -63,6 +63,8 @@
 	export let activeSection: SectionKey | null = null;
 
 	let loading = true;
+	let modelsLoading = false;
+	let modelsLoadError: string | null = null;
 
 	// Appearance
 	// Only expose system/dark/light in the UI, but keep legacy theme classes here so we can
@@ -1036,9 +1038,42 @@
 	}
 
 	onMount(async () => {
-		await getModels().catch((error) => {
-			console.error('Failed to load models for interface preferences', error);
+		modelsLoading = true;
+		modelsLoadError = null;
+		const modelsPromise = getModels()
+			.catch((error) => {
+				console.error('Failed to load models for interface preferences', error);
+				modelsLoadError =
+					typeof error === 'string'
+						? error
+						: error instanceof Error
+							? error.message
+							: 'Failed to load models';
+			})
+			.finally(() => {
+				modelsLoading = false;
+			});
+
+		const languagesPromise = getLanguages().catch((error) => {
+			console.error('Failed to load languages', error);
+			return [];
 		});
+
+		const adminTaskConfigPromise =
+			$user?.role === 'admin'
+				? getTaskConfig(localStorage.token).catch((error) => {
+						console.error('Failed to load task config', error);
+						return null;
+					})
+				: Promise.resolve(null);
+
+		const adminBannersPromise =
+			$user?.role === 'admin'
+				? getBanners(localStorage.token).catch((error) => {
+						console.error('Failed to load banners', error);
+						return [];
+					})
+				: Promise.resolve([]);
 
 		// Appearance
 		selectedTheme = normalizeTheme(localStorage.theme);
@@ -1046,7 +1081,7 @@
 			localStorage.theme = selectedTheme;
 			applyTheme(selectedTheme);
 		}
-		languages = await getLanguages();
+		languages = await languagesPromise;
 		highlighterTheme = normalizeHighlighterTheme(
 			$settings?.highlighterTheme ?? DEFAULT_HIGHLIGHTER_THEME
 		);
@@ -1083,14 +1118,11 @@
 		richTextInput = $settings?.richTextInput ?? true;
 		promptAutocomplete = $settings?.promptAutocomplete ?? false;
 		// Admin: load autocomplete generation task config
-		if ($user?.role === 'admin') {
-			try {
-				const tc = await getTaskConfig(localStorage.token);
-				enableAutocompleteGeneration = tc.ENABLE_AUTOCOMPLETE_GENERATION ?? false;
-				autocompleteGenerationInputMaxLength = tc.AUTOCOMPLETE_GENERATION_INPUT_MAX_LENGTH ?? -1;
-			} catch (e) {
-				console.error('Failed to load task config', e);
-			}
+		const adminTaskConfig = await adminTaskConfigPromise;
+		if (adminTaskConfig) {
+			enableAutocompleteGeneration = adminTaskConfig.ENABLE_AUTOCOMPLETE_GENERATION ?? false;
+			autocompleteGenerationInputMaxLength =
+				adminTaskConfig.AUTOCOMPLETE_GENERATION_INPUT_MAX_LENGTH ?? -1;
 		}
 		showFormattingToolbar = $settings?.showFormattingToolbar ?? false;
 		insertPromptAsRichText = $settings?.insertPromptAsRichText ?? false;
@@ -1129,11 +1161,7 @@
 
 		// Admin: load banners and prompt suggestions
 		if ($user?.role === 'admin') {
-			try {
-				banners = await getBanners(localStorage.token);
-			} catch (e) {
-				console.error('Failed to load banners', e);
-			}
+			banners = await adminBannersPromise;
 			promptSuggestions = $config?.default_prompt_suggestions ?? [];
 		}
 
@@ -1141,6 +1169,8 @@
 		startSectionBaselineSync();
 		syncSectionBaseline();
 		loading = false;
+
+		void modelsPromise;
 	});
 
 	onDestroy(() => {
@@ -1451,6 +1481,16 @@
 											]}
 										/>
 									</div>
+									{#if modelsLoading && ($models?.length ?? 0) === 0}
+										<div class="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+											<Spinner className="size-3.5" />
+											<span>{$i18n.t('Loading...')}</span>
+										</div>
+									{:else if modelsLoadError && ($models?.length ?? 0) === 0}
+										<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+											{modelsLoadError}
+										</div>
+									{/if}
 									{#if defaultModelIsAdminLocked}
 										<div class="text-xs text-gray-500 mt-2">{$i18n.t('Controlled by admin')}</div>
 									{/if}

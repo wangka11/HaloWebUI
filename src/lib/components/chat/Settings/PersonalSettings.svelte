@@ -9,6 +9,7 @@
 
 	import { generateInitialsImage, canvasPixelTest } from '$lib/utils';
 	import { copyToClipboard } from '$lib/utils';
+	import { localizeCommonError } from '$lib/utils/common-errors';
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
@@ -49,6 +50,9 @@
 	};
 	$: isDirty = !!(initialSnapshot && !isSettingsSnapshotEqual(snapshot, initialSnapshot));
 
+	const formatError = (error: unknown) =>
+		localizeCommonError(error, (key, options) => $i18n.t(key, options));
+
 	const syncBaseline = () => {
 		initialSnapshot = cloneSettingsSnapshot({
 			name,
@@ -75,13 +79,13 @@
 
 		const updatedUser = await updateUserProfile(localStorage.token, name, profileImageUrl).catch(
 			(error) => {
-				toast.error(`${error}`);
+				toast.error(formatError(error));
 			}
 		);
 
 		if (updatedUser) {
 			const sessionUser = await getSessionUser(localStorage.token).catch((error) => {
-				toast.error(`${error}`);
+				toast.error(formatError(error));
 				return null;
 			});
 

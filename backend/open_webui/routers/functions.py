@@ -27,8 +27,11 @@ router = APIRouter()
 
 def _invalidate_model_list_cache(request: Request) -> None:
     # Base model list is cached in-memory for performance; invalidate it on any function change.
+    from open_webui.utils.models import invalidate_base_model_cache
+
     request.app.state.BASE_MODELS = None
     request.app.state.MODELS = {}
+    invalidate_base_model_cache()
 
 ############################
 # GetFunctions
