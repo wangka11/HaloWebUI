@@ -1,5 +1,36 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
+const OPENAI_CHAT_COMPLETIONS_SUFFIX = '/chat/completions';
+
+type OpenAIConnectionConfig = Record<string, any> & {
+	force_mode?: boolean;
+};
+
+const isForceModeConnection = (
+	url: string,
+	config?: OpenAIConnectionConfig
+) => {
+	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
+	return Boolean(config?.force_mode) || normalizedUrl.endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX);
+};
+
+const getOpenAIModelsEndpoint = (
+	url: string,
+	config?: OpenAIConnectionConfig
+) => {
+	const normalizedUrl = (url || '').trim().replace(/\/+$/, '');
+	if (!normalizedUrl) return '';
+
+	if (isForceModeConnection(normalizedUrl, config)) {
+		if (normalizedUrl.endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX)) {
+			return `${normalizedUrl.slice(0, -OPENAI_CHAT_COMPLETIONS_SUFFIX.length)}/models`;
+		}
+		return normalizedUrl;
+	}
+
+	return `${normalizedUrl}/models`;
+};
+
 export const getOpenAIConfig = async (token: string = '') => {
 	let error = null;
 
@@ -208,10 +239,14 @@ export const updateOpenAIKeys = async (token: string = '', keys: string[]) => {
 	return res.OPENAI_API_KEYS;
 };
 
-export const getOpenAIModelsDirect = async (url: string, key: string) => {
+export const getOpenAIModelsDirect = async (
+	url: string,
+	key: string,
+	config?: OpenAIConnectionConfig
+) => {
 	let error = null;
 
-	const res = await fetch(`${url}/models`, {
+	const res = await fetch(getOpenAIModelsEndpoint(url, config), {
 		method: 'GET',
 		headers: {
 			Accept: 'application/json',
@@ -224,7 +259,7 @@ export const getOpenAIModelsDirect = async (url: string, key: string) => {
 			return res.json();
 		})
 		.catch((err) => {
-			error = `OpenAI: ${err?.error?.message ?? 'Network Problem'}`;
+			error = `OpenAI: ${err?.detail ?? err?.error?.message ?? err?.message ?? 'Network Problem'}`;
 			return [];
 		});
 
@@ -272,7 +307,7 @@ export const verifyOpenAIConnection = async (
 		| {
 				url: string;
 				key: string;
-				config?: object;
+				config?: OpenAIConnectionConfig;
 		  } = 'https://api.openai.com/v1',
 	keyOrDirect: string | boolean = '',
 	direct: boolean = false
@@ -284,6 +319,7 @@ export const verifyOpenAIConnection = async (
 				? keyOrDirect
 				: ''
 			: urlOrConnection.key;
+	const config = typeof urlOrConnection === 'string' ? undefined : urlOrConnection.config;
 	const isDirect = typeof keyOrDirect === 'boolean' ? keyOrDirect : direct;
 
 	if (!url) {
@@ -294,7 +330,7 @@ export const verifyOpenAIConnection = async (
 	let res = null;
 
 	if (isDirect) {
-		res = await fetch(`${url}/models`, {
+		res = await fetch(getOpenAIModelsEndpoint(url, config), {
 			method: 'GET',
 			headers: {
 				Accept: 'application/json',
@@ -307,7 +343,7 @@ export const verifyOpenAIConnection = async (
 				return res.json();
 			})
 			.catch((err) => {
-				error = `OpenAI: ${err?.error?.message ?? 'Network Problem'}`;
+				error = `OpenAI: ${err?.detail ?? err?.error?.message ?? err?.message ?? 'Network Problem'}`;
 				return [];
 			});
 
@@ -324,7 +360,8 @@ export const verifyOpenAIConnection = async (
 			},
 			body: JSON.stringify({
 				url,
-				key
+				key,
+				config
 			})
 		})
 			.then(async (res) => {
@@ -332,7 +369,7 @@ export const verifyOpenAIConnection = async (
 				return res.json();
 			})
 			.catch((err) => {
-				error = `OpenAI: ${err?.error?.message ?? 'Network Problem'}`;
+				error = `OpenAI: ${err?.detail ?? err?.error?.message ?? err?.message ?? 'Network Problem'}`;
 				return [];
 			});
 

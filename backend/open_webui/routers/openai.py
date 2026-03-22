@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from open_webui.models.models import Models
+from open_webui.models.files import Files
 from open_webui.config import (
     CACHE_DIR,
 )
@@ -31,6 +32,7 @@ from open_webui.env import (
     BYPASS_MODEL_ACCESS_CONTROL,
 )
 from open_webui.models.users import UserModel
+from open_webui.storage.provider import Storage
 from open_webui.utils.user_connections import (
     get_user_connections,
     set_user_connection_provider_config,
@@ -61,6 +63,8 @@ from open_webui.utils.access_control import has_access
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 
+OPENAI_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+
 
 def _is_official_openai_connection(url: str) -> bool:
     try:
@@ -70,11 +74,58 @@ def _is_official_openai_connection(url: str) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.com")
 
 
+def _is_force_mode_connection(url: str, api_config: Optional[dict] = None) -> bool:
+    normalized_url = (url or "").rstrip("/")
+    return bool((api_config or {}).get("force_mode")) or normalized_url.endswith(
+        OPENAI_CHAT_COMPLETIONS_SUFFIX
+    )
+
+
+def _get_openai_models_url(url: str, api_config: Optional[dict] = None) -> str:
+    normalized_url = (url or "").rstrip("/")
+    if not normalized_url:
+        return normalized_url
+
+    if _is_force_mode_connection(normalized_url, api_config):
+        if normalized_url.endswith(OPENAI_CHAT_COMPLETIONS_SUFFIX):
+            return (
+                f"{normalized_url[:-len(OPENAI_CHAT_COMPLETIONS_SUFFIX)]}/models"
+            )
+        return normalized_url
+
+    return f"{normalized_url}/models"
+
+
+def _get_openai_chat_completions_url(
+    url: str, api_config: Optional[dict] = None
+) -> str:
+    normalized_url = (url or "").rstrip("/")
+    if _is_force_mode_connection(normalized_url, api_config):
+        return normalized_url
+    return f"{normalized_url}/chat/completions"
+
+
 def _connection_supports_native_web_search(url: str, api_config: dict) -> bool:
     explicit = api_config.get("native_web_search_enabled") if isinstance(api_config, dict) else None
     if isinstance(explicit, bool):
         return explicit
     return _is_official_openai_connection(url)
+
+
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 def _get_openai_user_config(connection_user: Optional[UserModel]) -> tuple[list[str], list[str], dict]:
@@ -186,11 +237,56 @@ def _get_native_web_search_tool_type(api_config: dict) -> str:
     return "web_search"
 
 
+def _should_use_responses_api(
+    url: str,
+    api_config: Optional[dict],
+    model_id: Optional[str],
+    native_web_search: bool = False,
+) -> bool:
+    cfg = api_config or {}
+    use_responses_api = bool(cfg.get("use_responses_api", False) or native_web_search)
+    if _is_force_mode_connection(url, cfg):
+        return False
+    if use_responses_api and not native_web_search:
+        exclude_patterns = cfg.get("responses_api_exclude_patterns", [])
+        if isinstance(exclude_patterns, list):
+            model_lower = (model_id or "").lower()
+            if any(
+                isinstance(pattern, str)
+                and pattern.strip()
+                and pattern.strip().lower() in model_lower
+                for pattern in exclude_patterns
+            ):
+                return False
+    return use_responses_api
+
+
+def _connection_supports_native_file_inputs(
+    url: str, api_config: Optional[dict]
+) -> bool:
+    cfg = api_config or {}
+    if cfg.get("azure"):
+        return False
+    if _is_force_mode_connection(url, cfg):
+        return False
+    if not _coerce_bool(cfg.get("use_responses_api"), False):
+        return False
+
+    explicit = cfg.get("native_file_inputs_enabled")
+    if explicit is not None:
+        return _coerce_bool(explicit, False)
+
+    return _is_official_openai_connection(url)
+
+
 def _build_upstream_headers(
     base_url: str,
     key: str,
     api_config: dict,
     user: Optional[UserModel] = None,
+    *,
+    accept: Optional[str] = "application/json",
+    content_type: Optional[str] = "application/json",
 ) -> dict:
     headers: dict = {}
 
@@ -206,8 +302,11 @@ def _build_upstream_headers(
     if key and ("authorization" not in lower) and ("api-key" not in lower):
         headers["Authorization"] = f"Bearer {key}"
 
-    if "content-type" not in lower:
-        headers["Content-Type"] = "application/json"
+    if accept and "accept" not in lower:
+        headers["Accept"] = accept
+
+    if content_type and "content-type" not in lower:
+        headers["Content-Type"] = content_type
 
     if "openrouter.ai" in (base_url or ""):
         if "http-referer" not in lower:
@@ -226,6 +325,98 @@ def _build_upstream_headers(
                 headers[k] = v
 
     return headers
+
+
+def _get_openai_file_cache_key(api_config: dict, url_idx: int) -> str:
+    prefix = (api_config.get("_resolved_prefix_id") or "").strip()
+    return prefix if prefix else f"idx:{url_idx}"
+
+
+def _get_cached_openai_file_id(file_meta: dict, conn_key: str) -> Optional[str]:
+    try:
+        provider_meta = (file_meta or {}).get("openai", {}) or {}
+        files_map = provider_meta.get("files", {}) or {}
+        entry = files_map.get(conn_key, {}) or {}
+        remote_id = entry.get("file_id")
+        return str(remote_id) if remote_id else None
+    except Exception:
+        return None
+
+
+def _set_cached_openai_file_id(
+    file_id: str, file_meta: dict, conn_key: str, remote_file_id: str
+) -> dict:
+    meta = dict(file_meta or {})
+    provider_meta = dict(meta.get("openai") or {})
+    files_map = dict(provider_meta.get("files") or {})
+    files_map[conn_key] = {
+        "file_id": remote_file_id,
+        "uploaded_at": int(time.time()),
+    }
+    provider_meta["files"] = files_map
+    meta["openai"] = provider_meta
+    Files.update_file_metadata_by_id(file_id, meta)
+    return meta
+
+
+async def _upload_file_to_openai(
+    *,
+    base_url: str,
+    key: str,
+    api_config: dict,
+    local_path: str,
+    filename: str,
+    content_type: str,
+    purpose: str = "user_data",
+    user: Optional[UserModel] = None,
+) -> str:
+    upload_url = f"{base_url}/files"
+    headers = _build_upstream_headers(
+        base_url,
+        key,
+        api_config,
+        user=user,
+        accept="application/json",
+        content_type=None,
+    )
+
+    timeout = aiohttp.ClientTimeout(total=300)
+    async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        form = aiohttp.FormData()
+        form.add_field("purpose", purpose)
+
+        with open(local_path, "rb") as file_handle:
+            form.add_field(
+                "file",
+                file_handle,
+                filename=filename,
+                content_type=content_type or "application/octet-stream",
+            )
+
+            async with session.post(upload_url, data=form, headers=headers) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    message = None
+                    if isinstance(data, dict):
+                        error = data.get("error")
+                        if isinstance(error, dict):
+                            message = error.get("message")
+                        elif isinstance(error, str):
+                            message = error
+                        else:
+                            message = data.get("message")
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=message or str(data)[:500],
+                    )
+
+                if not isinstance(data, dict) or not data.get("id"):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Invalid response from OpenAI Files API",
+                    )
+
+                return str(data["id"])
 
 
 async def _safe_read_upstream_body(response: aiohttp.ClientResponse):
@@ -724,7 +915,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
         request_tasks.append(
             send_get_request(
-                f"{url}/models",
+                _get_openai_models_url(url, api_config),
                 keys[idx] if idx < len(keys) else "",
                 user=user,
             )
@@ -875,6 +1066,8 @@ async def get_models(
 
         url = base_urls[url_idx]
         key = keys[url_idx] if url_idx < len(keys) else ""
+        api_config = _cfgs.get(str(url_idx), _cfgs.get(url, {})) or {}
+        models_url = _get_openai_models_url(url, api_config)
 
         r = None
         async with aiohttp.ClientSession(
@@ -882,7 +1075,7 @@ async def get_models(
         ) as session:
             try:
                 async with session.get(
-                    f"{url}/models",
+                    models_url,
                     headers={
                         "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
@@ -948,6 +1141,7 @@ async def get_models(
 class ConnectionVerificationForm(BaseModel):
     url: str
     key: str
+    config: Optional[dict] = None
 
 
 class ResponsesVerificationForm(BaseModel):
@@ -963,13 +1157,15 @@ async def verify_connection(
 ):
     url = form_data.url
     key = form_data.key
+    api_config = form_data.config or {}
+    models_url = _get_openai_models_url(url, api_config)
 
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
     ) as session:
         try:
             async with session.get(
-                f"{url}/models",
+                models_url,
                 headers={
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
@@ -1155,18 +1351,15 @@ async def generate_chat_completion(
     native_web_search = payload.pop("native_web_search", False) is True
 
     # Responses API routing is strict: if enabled, we only call /responses and surface real errors.
-    use_responses_api = bool(api_config.get("use_responses_api", False) or native_web_search)
-    if use_responses_api and not native_web_search:
-        exclude_patterns = api_config.get("responses_api_exclude_patterns", [])
-        if isinstance(exclude_patterns, list):
-            model_lower = (model_id or "").lower()
-            if any(
-                isinstance(p, str) and p.strip() and p.strip().lower() in model_lower
-                for p in exclude_patterns
-            ):
-                use_responses_api = False
+    use_responses_api = _should_use_responses_api(
+        url, api_config, model_id, native_web_search=native_web_search
+    )
 
-    request_url = f"{url}/responses" if use_responses_api else f"{url}/chat/completions"
+    request_url = (
+        f"{url}/responses"
+        if use_responses_api
+        else _get_openai_chat_completions_url(url, api_config)
+    )
 
     # Build headers (supports per-connection custom headers).
     headers = _build_upstream_headers(url, key, api_config, user=user)

@@ -43,8 +43,14 @@ from open_webui.routers.tasks import (
 from open_webui.routers.retrieval import process_web_search, SearchForm
 from open_webui.routers.images import image_generations, GenerateImageForm
 from open_webui.routers.openai import (
+    _connection_supports_native_file_inputs,
+    _get_cached_openai_file_id,
+    _get_openai_file_cache_key,
     _get_openai_user_config,
+    _set_cached_openai_file_id,
     _resolve_openai_connection_by_model_id,
+    _should_use_responses_api,
+    _upload_file_to_openai,
 )
 from open_webui.routers.gemini import (
     _get_gemini_user_config,
@@ -213,6 +219,18 @@ _NATIVE_WEB_SEARCH_RETRY_PATTERNS = (
     "unknown parameter",
     "invalid value",
     "schema",
+)
+
+_NATIVE_FILE_INPUT_RETRY_PATTERNS = (
+    "input_file",
+    "file_id",
+    "files api",
+    "invalid file",
+    "unsupported file",
+    "unsupported document",
+    "file upload",
+    "purpose",
+    "user_data",
 )
 
 
@@ -432,6 +450,21 @@ def should_retry_native_web_search_with_halo(metadata: dict, error: Any) -> bool
     return any(pattern in text for pattern in _NATIVE_WEB_SEARCH_RETRY_PATTERNS)
 
 
+def should_retry_native_file_inputs_with_rag(metadata: dict, error: Any) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("disable_native_file_inputs"):
+        return False
+    if not metadata.get("native_file_input_file_ids"):
+        return False
+
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+
+    return any(pattern in text for pattern in _NATIVE_FILE_INPUT_RETRY_PATTERNS)
+
+
 def _build_api_error_payload(error: dict, model_id: str) -> dict:
     """Build a structured error payload from a stream API error chunk.
 
@@ -518,6 +551,227 @@ def _extract_files_from_messages(messages: list[dict]) -> list[dict]:
                 })
 
     return result
+
+
+def _get_attachment_file_id(file_item: Any) -> str:
+    if not isinstance(file_item, dict):
+        return ""
+    file_id = file_item.get("id")
+    if not file_id and isinstance(file_item.get("file"), dict):
+        file_id = file_item["file"].get("id")
+    return str(file_id or "").strip()
+
+
+def _is_native_file_input_candidate(file_item: Any) -> bool:
+    if not isinstance(file_item, dict):
+        return False
+    if file_item.get("type") != "file":
+        return False
+    if file_item.get("source") == "knowledge":
+        return False
+    return bool(_get_attachment_file_id(file_item))
+
+
+def _filter_rag_files_for_native_file_inputs(
+    files: list[dict], native_file_input_ids: set[str]
+) -> list[dict]:
+    if not files or not native_file_input_ids:
+        return files
+    return [
+        file_item
+        for file_item in files
+        if _get_attachment_file_id(file_item) not in native_file_input_ids
+    ]
+
+
+def _merge_message_content_with_native_file_inputs(
+    content: Any, file_parts: list[dict]
+) -> Any:
+    if not file_parts:
+        return content
+
+    if isinstance(content, list):
+        return [*content, *file_parts]
+
+    parts: list[dict] = []
+    if isinstance(content, str):
+        if content:
+            parts.append({"type": "text", "text": content})
+    elif content is not None:
+        text = str(content)
+        if text:
+            parts.append({"type": "text", "text": text})
+
+    parts.extend(file_parts)
+    return parts
+
+
+async def _prepare_openai_native_file_inputs(
+    request: Request, form_data: dict, metadata: dict, user: UserModel, model: dict
+) -> None:
+    if metadata.get("disable_native_file_inputs"):
+        return
+    if not (
+        (model or {}).get("owned_by") == "openai" or isinstance((model or {}).get("openai"), dict)
+    ):
+        return
+
+    messages = form_data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+
+    all_regular_files = metadata.get("files") or []
+    candidate_files = [
+        file_item for file_item in all_regular_files if _is_native_file_input_candidate(file_item)
+    ]
+    if not candidate_files:
+        return
+
+    connection_user = getattr(getattr(request, "state", None), "connection_user", None) or user
+    base_urls, keys, cfgs = _get_openai_user_config(connection_user)
+    if not base_urls:
+        return
+
+    model_id = form_data.get("model") or (model or {}).get("id") or ""
+    url_idx, url, key, api_config = _resolve_openai_connection_by_model_id(
+        model_id, base_urls, keys, cfgs
+    )
+    if not url:
+        return
+
+    if not _should_use_responses_api(url, api_config, model_id, native_web_search=False):
+        return
+
+    if not _connection_supports_native_file_inputs(url, api_config):
+        return
+
+    file_ids_by_message_idx: dict[int, list[str]] = {}
+    message_level_files_found = False
+    for idx, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        message_files = message.get("files") or []
+        if not isinstance(message_files, list) or not message_files:
+            continue
+        eligible_ids = [
+            _get_attachment_file_id(file_item)
+            for file_item in message_files
+            if _is_native_file_input_candidate(file_item)
+        ]
+        eligible_ids = [file_id for file_id in eligible_ids if file_id]
+        if eligible_ids:
+            message_level_files_found = True
+            file_ids_by_message_idx[idx] = eligible_ids
+
+    if not message_level_files_found:
+        last_user_idx = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
+                last_user_idx = idx
+                break
+        if last_user_idx is None:
+            return
+        file_ids_by_message_idx[last_user_idx] = [
+            _get_attachment_file_id(file_item) for file_item in candidate_files
+        ]
+
+    unique_file_ids: list[str] = []
+    for file_ids in file_ids_by_message_idx.values():
+        for file_id in file_ids:
+            if file_id and file_id not in unique_file_ids:
+                unique_file_ids.append(file_id)
+    if not unique_file_ids:
+        return
+
+    conn_key = _get_openai_file_cache_key(api_config, url_idx)
+    remote_ids_by_local_id: dict[str, str] = {}
+
+    for file_id in unique_file_ids:
+        file_obj = Files.get_file_by_id(file_id)
+        if not file_obj or not file_obj.meta or not file_obj.path:
+            continue
+
+        content_type = (file_obj.meta or {}).get("content_type") or "application/octet-stream"
+        if str(content_type).startswith("image/"):
+            continue
+
+        remote_file_id = _get_cached_openai_file_id(file_obj.meta, conn_key)
+        if not remote_file_id:
+            try:
+                local_path = Storage.get_file(file_obj.path)
+                remote_file_id = await _upload_file_to_openai(
+                    base_url=url.rstrip("/"),
+                    key=key or "",
+                    api_config=api_config,
+                    local_path=local_path,
+                    filename=file_obj.filename or "file",
+                    content_type=content_type,
+                    user=user,
+                )
+                _set_cached_openai_file_id(
+                    file_id, file_obj.meta, conn_key, remote_file_id
+                )
+            except Exception as exc:
+                log.info(
+                    "[OPENAI] Native file input upload failed for %s: %s",
+                    file_id,
+                    exc,
+                )
+                continue
+
+        if remote_file_id:
+            remote_ids_by_local_id[file_id] = remote_file_id
+
+    if not remote_ids_by_local_id:
+        return
+
+    parts_by_message_idx: dict[str, list[dict]] = {}
+    native_file_input_ids: list[str] = []
+    for idx, file_ids in file_ids_by_message_idx.items():
+        parts: list[dict] = []
+        for file_id in file_ids:
+            remote_file_id = remote_ids_by_local_id.get(file_id)
+            if not remote_file_id:
+                continue
+            parts.append({"type": "input_file", "file_id": remote_file_id})
+            if file_id not in native_file_input_ids:
+                native_file_input_ids.append(file_id)
+        if parts:
+            parts_by_message_idx[str(idx)] = parts
+
+    if not parts_by_message_idx:
+        return
+
+    metadata["native_file_input_file_ids"] = native_file_input_ids
+    metadata["native_file_input_parts_by_message"] = parts_by_message_idx
+
+
+def _apply_prepared_openai_native_file_inputs(
+    form_data: dict, metadata: dict
+) -> None:
+    messages = form_data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+
+    parts_by_message = metadata.get("native_file_input_parts_by_message") or {}
+    if not isinstance(parts_by_message, dict) or not parts_by_message:
+        return
+
+    for idx_str, file_parts in parts_by_message.items():
+        try:
+            idx = int(idx_str)
+        except Exception:
+            continue
+        if idx < 0 or idx >= len(messages):
+            continue
+        if not isinstance(file_parts, list) or not file_parts:
+            continue
+        message = messages[idx]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        message["content"] = _merge_message_content_with_native_file_inputs(
+            message.get("content"), file_parts
+        )
 
 
 def get_citation_sources_from_tool_result(
@@ -1280,6 +1534,14 @@ async def chat_completion_files_handler(
 
     # J-7-16: Merge knowledge files back in for RAG processing.
     _regular_files = body.get("metadata", {}).get("files", None) or []
+    native_file_input_ids = {
+        str(file_id).strip()
+        for file_id in (body.get("metadata", {}).get("native_file_input_file_ids") or [])
+        if str(file_id).strip()
+    }
+    _regular_files = _filter_rag_files_for_native_file_inputs(
+        _regular_files, native_file_input_ids
+    )
     _knowledge_files = body.get("metadata", {}).get("knowledge_files", [])
     files = _regular_files + _knowledge_files if (_regular_files or _knowledge_files) else None
 
@@ -1579,6 +1841,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata["files"] = [f for f in all_files if f.get("source") != "knowledge"]
         metadata["knowledge_files"] = knowledge_files
 
+    try:
+        await _prepare_openai_native_file_inputs(
+            request, form_data, metadata, user, model
+        )
+    except Exception as e:
+        log.exception(e)
+
     # Server side tools
     tool_ids = metadata.get("tool_ids", None)
     # Client side tools
@@ -1777,6 +2046,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 rag_content,
                 form_data["messages"],
             )
+
+    _apply_prepared_openai_native_file_inputs(form_data, metadata)
 
     # If there are citations, add them to the data_items
     sources = [source for source in sources if source.get("source", {}).get("name", "")]

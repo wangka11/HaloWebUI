@@ -66,6 +66,10 @@
 	};
 
 	const AUTO_EXPAND_MAX_CONNECTIONS = 2;
+	const getConnectionRenderKey = (url: string, key: string | undefined, config: any) =>
+		config ?? `${url}::${key ?? ''}`;
+	const getOllamaRenderKey = (url: string, config: any) => config ?? url;
+
 	const initExpandedSections = () => {
 		if (expandedSectionsInitialized) return;
 
@@ -716,7 +720,7 @@
 						{#if expandedSections.openai}
 							<div transition:slide={{ duration: 200, easing: quintOut }} class="px-5 pb-5">
 								<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-									{#each OPENAI_API_BASE_URLS as url, idx}
+										{#each OPENAI_API_BASE_URLS as url, idx (getConnectionRenderKey(url, OPENAI_API_KEYS[idx], OPENAI_API_CONFIGS[idx]))}
 										<OpenAIConnection
 											bind:url={OPENAI_API_BASE_URLS[idx]}
 											bind:key={OPENAI_API_KEYS[idx]}
@@ -853,7 +857,7 @@
 						{#if expandedSections.gemini}
 							<div transition:slide={{ duration: 200, easing: quintOut }} class="px-5 pb-5">
 								<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-									{#each GEMINI_API_BASE_URLS as url, idx}
+										{#each GEMINI_API_BASE_URLS as url, idx (getConnectionRenderKey(url, GEMINI_API_KEYS[idx], GEMINI_API_CONFIGS[idx]))}
 										<GeminiConnection
 											bind:url={GEMINI_API_BASE_URLS[idx]}
 											bind:key={GEMINI_API_KEYS[idx]}
@@ -981,7 +985,7 @@
 						{#if expandedSections.anthropic}
 							<div transition:slide={{ duration: 200, easing: quintOut }} class="px-5 pb-5">
 								<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-									{#each ANTHROPIC_API_BASE_URLS as url, idx}
+										{#each ANTHROPIC_API_BASE_URLS as url, idx (getConnectionRenderKey(url, ANTHROPIC_API_KEYS[idx], ANTHROPIC_API_CONFIGS[idx]))}
 										<AnthropicConnection
 											bind:url={ANTHROPIC_API_BASE_URLS[idx]}
 											bind:key={ANTHROPIC_API_KEYS[idx]}
@@ -1114,7 +1118,7 @@
 								class="px-5 pb-5 space-y-2"
 							>
 								<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-									{#each OLLAMA_BASE_URLS as url, idx}
+										{#each OLLAMA_BASE_URLS as url, idx (getOllamaRenderKey(url, OLLAMA_API_CONFIGS[idx]))}
 										<OllamaConnection
 											bind:url={OLLAMA_BASE_URLS[idx]}
 											bind:config={OLLAMA_API_CONFIGS[idx]}

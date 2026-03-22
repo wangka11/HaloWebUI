@@ -99,6 +99,11 @@
 		return { nextUrls, nextCfgs };
 	};
 
+	const getConnectionRenderKey = (url: string, key: string | undefined, config: any) =>
+		config ?? `${url}::${key ?? ''}`;
+
+	const getOllamaRenderKey = (url: string, config: any) => config ?? url;
+
 	const updateHandler = async (refreshModels = true) => {
 		ensureAll();
 		try {
@@ -229,7 +234,7 @@
 			{#if selectedTab === 'openai'}
 				<section class="glass-section p-5 space-y-3">
 					<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-						{#each connections?.openai?.OPENAI_API_BASE_URLS ?? [] as url, idx}
+						{#each connections?.openai?.OPENAI_API_BASE_URLS ?? [] as url, idx (getConnectionRenderKey(url, connections.openai.OPENAI_API_KEYS[idx], connections.openai.OPENAI_API_CONFIGS[idx]))}
 							<OpenAIConnection
 								bind:url
 								bind:key={connections.openai.OPENAI_API_KEYS[idx]}
@@ -253,7 +258,7 @@
 			{:else if selectedTab === 'gemini'}
 				<section class="glass-section p-5 space-y-3">
 					<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-						{#each connections?.gemini?.GEMINI_API_BASE_URLS ?? [] as url, idx}
+						{#each connections?.gemini?.GEMINI_API_BASE_URLS ?? [] as url, idx (getConnectionRenderKey(url, connections.gemini.GEMINI_API_KEYS[idx], connections.gemini.GEMINI_API_CONFIGS[idx]))}
 							<GeminiConnection
 								bind:url
 								bind:key={connections.gemini.GEMINI_API_KEYS[idx]}
@@ -277,7 +282,7 @@
 			{:else if selectedTab === 'anthropic'}
 				<section class="glass-section p-5 space-y-3">
 					<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-						{#each connections?.anthropic?.ANTHROPIC_API_BASE_URLS ?? [] as url, idx}
+						{#each connections?.anthropic?.ANTHROPIC_API_BASE_URLS ?? [] as url, idx (getConnectionRenderKey(url, connections.anthropic.ANTHROPIC_API_KEYS[idx], connections.anthropic.ANTHROPIC_API_CONFIGS[idx]))}
 							<AnthropicConnection
 								bind:url
 								bind:key={connections.anthropic.ANTHROPIC_API_KEYS[idx]}
@@ -301,7 +306,7 @@
 			{:else}
 				<section class="glass-section p-5 space-y-3">
 					<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-						{#each connections?.ollama?.OLLAMA_BASE_URLS ?? [] as url, idx}
+						{#each connections?.ollama?.OLLAMA_BASE_URLS ?? [] as url, idx (getOllamaRenderKey(url, connections.ollama.OLLAMA_API_CONFIGS[idx]))}
 							<OllamaConnectionCard
 								bind:url
 								{idx}

@@ -50,9 +50,14 @@
 <div class="flex w-full gap-2 items-center">
 	<Tooltip
 		className="w-full relative"
-		content={$i18n.t(`WebUI will make requests to "{{url}}/chat/completions"`, {
-			url
-		})}
+		content={$i18n.t(
+			config?.force_mode
+				? `WebUI will make requests to "{{url}}"`
+				: `WebUI will make requests to "{{url}}/chat/completions"`,
+			{
+				url
+			}
+		)}
 		placement="top-start"
 	>
 		{#if !(config?.enable ?? true)}

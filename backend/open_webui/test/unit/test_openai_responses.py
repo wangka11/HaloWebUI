@@ -131,6 +131,35 @@ def test_convert_chat_completions_to_responses_payload_injects_native_web_search
     assert r["tool_choice"] == "auto"
 
 
+def test_convert_chat_completions_to_responses_payload_preserves_input_files():
+    chat = {
+        "model": "gpt-test",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read these files"},
+                    {"type": "input_file", "file_id": "file_123"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                    {"type": "file", "file_id": "file_456"},
+                ],
+            }
+        ],
+    }
+
+    r = convert_chat_completions_to_responses_payload(
+        chat,
+        native_web_search_tool_type=None,
+    )
+
+    assert r["input"][0]["type"] == "message"
+    content = r["input"][0]["content"]
+    assert {"type": "input_text", "text": "Read these files"} in content
+    assert {"type": "input_file", "file_id": "file_123"} in content
+    assert {"type": "input_file", "file_id": "file_456"} in content
+    assert {"type": "input_image", "image_url": "https://example.com/a.png"} in content
+
+
 def test_iter_responses_events_sse_fragmented():
     event1 = json.dumps({"type": "response.output_text.delta", "delta": "Hi"})
     event2 = json.dumps({"type": "response.completed", "response": {"usage": {"output_tokens": 2}}})

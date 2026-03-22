@@ -29,6 +29,7 @@
 		enable?: boolean;
 		tags?: Array<{ name: string }>;
 		prefix_id?: string;
+		force_mode?: boolean;
 		remark?: string;
 		icon?: string;
 		model_ids?: string[];
@@ -39,6 +40,7 @@
 		api_version?: string;
 		use_responses_api?: boolean;
 		responses_api_exclude_patterns?: string[];
+		native_file_inputs_enabled?: boolean;
 		native_web_search_enabled?: boolean;
 		native_web_search_tool_type?: string;
 		// Anthropic-specific
@@ -105,6 +107,8 @@
 
 	let useResponsesApi = false;
 	let responsesApiExcludePatterns: Array<{ name: string }> = [{ name: 'gemini' }];
+	let nativeFileInputsEnabled = false;
+	let nativeFileInputsTouched = false;
 	let nativeWebSearchEnabled = false;
 	let nativeWebSearchToolType = 'web_search';
 	let nativeWebSearchTouched = false;
@@ -172,8 +176,13 @@
 	let showModelSelector = false;
 	let showNoModelsConfirm = false;
 
+	const OPENAI_CHAT_COMPLETIONS_SUFFIX = '/chat/completions';
+
 	// 检测是否为强制模式（URL 以 # 结尾）
 	$: isForceMode = url.trim().endsWith('#');
+	$: if (isForceMode && useResponsesApi) {
+		useResponsesApi = false;
+	}
 
 	// 智能规范化 URL，确保以正确的版本路径结尾
 	const normalizeUrl = (inputUrl: string, versionPath: string): string => {
@@ -213,6 +222,24 @@
 		return normalized;
 	};
 
+	const isLegacyForceModeUrl = (inputUrl: string) =>
+		!gemini &&
+		!anthropic &&
+		!ollama &&
+		(inputUrl || '').trim().replace(/\/+$/, '').endsWith(OPENAI_CHAT_COMPLETIONS_SUFFIX);
+
+	const localizeConnectionError = (error: unknown) => {
+		const raw =
+			error instanceof Error ? error.message : typeof error === 'string' ? error : `${error ?? ''}`;
+
+		return raw
+			.replaceAll('Network Problem', $i18n.t('Network Problem'))
+			.replaceAll(
+				'Open WebUI: Server Connection Error',
+				$i18n.t('Open WebUI: Server Connection Error')
+			);
+	};
+
 	const getHostname = (inputUrl: string): string => {
 		const trimmed = (inputUrl || '').trim().replace(/#$/, '');
 		if (!trimmed) return '';
@@ -246,6 +273,19 @@
 		}
 
 		if (azure) {
+			return false;
+		}
+
+		const hostname = getHostname(url || 'https://api.openai.com/v1');
+		return isOfficialOpenAIHostname(hostname);
+	};
+
+	const getDefaultNativeFileInputsEnabled = () => {
+		if (ollama || direct || anthropic || gemini || azure || isForceMode) {
+			return false;
+		}
+
+		if (!useResponsesApi) {
 			return false;
 		}
 
@@ -321,8 +361,13 @@
 		: false;
 	$: showNativeWebSearchToolType =
 		!ollama && !direct && !gemini && !anthropic && !azure && !isOfficialOpenAIConnection;
+	$: showNativeFileInputsToggle =
+		!ollama && !direct && !gemini && !anthropic && !azure && !isForceMode && useResponsesApi;
 	$: if (show && showNativeWebSearchToggle && !nativeWebSearchTouched) {
 		nativeWebSearchEnabled = getDefaultNativeWebSearchEnabled();
+	}
+	$: if (show && !nativeFileInputsTouched) {
+		nativeFileInputsEnabled = getDefaultNativeFileInputsEnabled();
 	}
 
 	const verifyOllamaHandler = async () => {
@@ -365,6 +410,7 @@
 				url: verifyUrl,
 				key,
 				config: {
+					force_mode: isForceMode,
 					auth_type,
 					azure: azure,
 					api_version: apiVersion,
@@ -373,7 +419,7 @@
 			},
 			direct
 		).catch((error) => {
-			toast.error(`${error}`);
+			toast.error(localizeConnectionError(error));
 		});
 
 		if (res) {
@@ -570,6 +616,7 @@
 					connection_type: connectionType,
 					auth_type,
 					headers: headers ? JSON.parse(headers) : undefined,
+					...(isForceMode ? { force_mode: true } : {}),
 					...(anthropic
 						? {
 								anthropic_version: anthropicVersion,
@@ -596,7 +643,12 @@
 								native_web_search_tool_type: nativeWebSearchToolType.trim()
 							}
 						: {}),
-					...(!ollama && !gemini && !anthropic && useResponsesApi
+					...(!ollama && !gemini && !anthropic && !direct && !azure && !isForceMode && useResponsesApi
+						? {
+								native_file_inputs_enabled: nativeFileInputsEnabled
+							}
+						: {}),
+					...(!ollama && !gemini && !anthropic && !isForceMode && useResponsesApi
 						? {
 								use_responses_api: true,
 								responses_api_exclude_patterns: responsesApiExcludePatterns
@@ -639,6 +691,8 @@
 			modelIds = [];
 			useResponsesApi = false;
 			responsesApiExcludePatterns = [{ name: 'gemini' }];
+			nativeFileInputsEnabled = false;
+			nativeFileInputsTouched = false;
 			nativeWebSearchEnabled = false;
 			nativeWebSearchToolType = 'web_search';
 			nativeWebSearchTouched = false;
@@ -664,7 +718,12 @@
 
 	const init = () => {
 		if (connection) {
-			url = connection.url;
+			const shouldRestoreForceMode =
+				connection.config?.force_mode === true || isLegacyForceModeUrl(connection.url);
+			url =
+				shouldRestoreForceMode && !connection.url.trim().endsWith('#')
+					? `${connection.url}#`
+					: connection.url;
 			key = connection.key;
 
 			auth_type = gemini
@@ -695,6 +754,8 @@
 					apiVersion = '';
 					useResponsesApi = false;
 					responsesApiExcludePatterns = [{ name: 'gemini' }];
+					nativeFileInputsEnabled = false;
+					nativeFileInputsTouched = false;
 					nativeWebSearchEnabled = false;
 					nativeWebSearchToolType = 'web_search';
 					nativeWebSearchTouched = false;
@@ -724,6 +785,18 @@
 					responsesApiExcludePatterns = (
 						connection.config?.responses_api_exclude_patterns ?? ['gemini']
 					).map((p) => ({ name: p }));
+					if (
+						Object.prototype.hasOwnProperty.call(
+							connection.config ?? {},
+							'native_file_inputs_enabled'
+						)
+					) {
+						nativeFileInputsEnabled = connection.config?.native_file_inputs_enabled ?? false;
+						nativeFileInputsTouched = true;
+					} else {
+						nativeFileInputsEnabled = getDefaultNativeFileInputsEnabled();
+						nativeFileInputsTouched = false;
+					}
 					nativeWebSearchToolType =
 						connection.config?.native_web_search_tool_type?.toString().trim() || 'web_search';
 					if (
@@ -757,6 +830,8 @@
 				anthropicExtraBody = '';
 			}
 			preserveEmptyPrefixId = false;
+			nativeFileInputsEnabled = false;
+			nativeFileInputsTouched = false;
 			nativeWebSearchEnabled = getDefaultNativeWebSearchEnabled();
 			nativeWebSearchToolType = 'web_search';
 			nativeWebSearchTouched = false;
@@ -785,6 +860,7 @@
 	bind:show={showModelSelector}
 	bind:modelIds
 	url={normalizedUrl}
+	force_mode={isForceMode}
 	{key}
 	{auth_type}
 	headers={parsedHeaders}
@@ -828,7 +904,7 @@
 					<Switch bind:state={enable} />
 				</div>
 				<!-- Responses API 状态指示器 -->
-				{#if !ollama && !gemini && !anthropic && !direct && !azure}
+				{#if !ollama && !gemini && !anthropic && !direct && !azure && !isForceMode}
 					<div
 						class="flex items-center gap-1.5 px-2.5 py-1 rounded-full {useResponsesApi
 							? 'bg-blue-50 dark:bg-blue-900/30'
@@ -997,6 +1073,13 @@
 										<span class="break-all">https://api.openai.com/v1/chat/completions</span>
 									{/if}
 								</div>
+								{#if isForceMode && !gemini && !anthropic && !ollama}
+									<div class="text-xs text-amber-600 dark:text-amber-400 mt-1">
+										{$i18n.t(
+											'Force mode uses the exact URL and will not auto-append /chat/completions or /v1.'
+										)}
+									</div>
+								{/if}
 							</div>
 
 							<!-- API Key -->
@@ -1439,7 +1522,7 @@
 									</div>
 								{/if}
 
-								{#if !ollama && !direct && !gemini && !anthropic && !azure}
+								{#if !ollama && !direct && !gemini && !anthropic && !azure && !isForceMode}
 									<!-- Use Responses API -->
 									<div class="flex flex-col gap-2">
 										<div class="flex items-center justify-between">
@@ -1483,7 +1566,37 @@
 													)}
 												</div>
 											</div>
+
+											{#if showNativeFileInputsToggle}
+												<div class="flex items-center justify-between mt-2">
+													<div>
+														<span class="text-sm">{$i18n.t('Enable Native File Inputs')}</span>
+														<div class="text-xs text-gray-400 mt-0.5">
+															{#if isOfficialOpenAIConnection}
+																{$i18n.t(
+																	'Official OpenAI connections default to enabled. Compatible gateways usually need manual opt-in.'
+																)}
+															{:else}
+																{$i18n.t(
+																	'Uploads local document files through the OpenAI Files API when supported, and automatically falls back to local parsing when it fails.'
+																)}
+															{/if}
+														</div>
+													</div>
+													<Switch
+														state={nativeFileInputsEnabled}
+														on:change={(e) => {
+															nativeFileInputsEnabled = e.detail;
+															nativeFileInputsTouched = true;
+														}}
+													/>
+												</div>
+											{/if}
 										{/if}
+									</div>
+								{:else if isForceMode && !ollama && !direct && !gemini && !anthropic && !azure}
+									<div class="text-xs text-amber-600 dark:text-amber-400">
+										{$i18n.t('Force mode connections do not support Responses API auto-routing.')}
 									</div>
 								{/if}
 

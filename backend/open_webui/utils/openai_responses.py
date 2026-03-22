@@ -211,6 +211,21 @@ def _content_chat_to_responses(content: Any, *, role: str = "user") -> Any:
                 if url:
                     parts.append({"type": "input_image", "image_url": url})
                 continue
+            if t in ("file", "input_file"):
+                if role == "assistant":
+                    file_id = item.get("file_id") or item.get("id") or ""
+                    parts.append(
+                        {
+                            "type": text_part_type,
+                            "text": f"[file]{' ' + str(file_id) if file_id else ''}",
+                        }
+                    )
+                    continue
+
+                file_id = item.get("file_id") or item.get("id")
+                if file_id:
+                    parts.append({"type": "input_file", "file_id": str(file_id)})
+                continue
         # If we couldn't map anything, fall back to a string.
         if not parts:
             return [{"type": text_part_type, "text": _stringify_message_content(content)}]

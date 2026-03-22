@@ -103,6 +103,13 @@
 	let loading = false;
 
 	const eventTarget = new EventTarget();
+	type PendingGeminiImage = {
+		mimeType: string;
+		parts: string[];
+	};
+	const pendingGeminiImages = new Map<string, Map<string, PendingGeminiImage>>();
+	const buildMarkdownImage = (mimeType: string, data: string) =>
+		`\n![Generated Image](data:${mimeType};base64,${data})\n`;
 	let controlPane;
 	let controlPaneComponent;
 
@@ -1391,10 +1398,66 @@
 		}
 	};
 
+	const consumeGeminiImageDelta = (messageId: string, imageDelta: any): string => {
+		if (!imageDelta || typeof imageDelta !== 'object') {
+			return '';
+		}
+
+		const imageId = typeof imageDelta.id === 'string' && imageDelta.id ? imageDelta.id : null;
+		if (!imageId) {
+			return '';
+		}
+
+		let messageImages = pendingGeminiImages.get(messageId);
+		if (!messageImages) {
+			messageImages = new Map<string, PendingGeminiImage>();
+			pendingGeminiImages.set(messageId, messageImages);
+		}
+
+		const mimeType =
+			typeof imageDelta.mime_type === 'string' && imageDelta.mime_type
+				? imageDelta.mime_type
+				: 'image/png';
+		const data = typeof imageDelta.data === 'string' ? imageDelta.data : '';
+		const pending = messageImages.get(imageId) ?? { mimeType, parts: [] };
+
+		pending.mimeType = mimeType || pending.mimeType;
+		if (data) {
+			pending.parts.push(data);
+		}
+		messageImages.set(imageId, pending);
+
+		if (imageDelta.final !== true) {
+			return '';
+		}
+
+		const markdown = buildMarkdownImage(pending.mimeType, pending.parts.join(''));
+		messageImages.delete(imageId);
+		if (messageImages.size === 0) {
+			pendingGeminiImages.delete(messageId);
+		}
+		return markdown;
+	};
+
+	const clearPendingGeminiImages = (messageId: string, warnOnIncomplete = false) => {
+		const messageImages = pendingGeminiImages.get(messageId);
+		if (!messageImages) {
+			return;
+		}
+		if (warnOnIncomplete && messageImages.size > 0) {
+			console.warn('Discarding incomplete streamed Gemini image(s)', {
+				messageId,
+				count: messageImages.size
+			});
+		}
+		pendingGeminiImages.delete(messageId);
+	};
+
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const { id, done, choices, content, sources, error, usage } = data;
 
 		if (error) {
+			clearPendingGeminiImages(message.id, true);
 			if (typeof error === 'object' && error !== null && 'content' in error) {
 				message.error = error;
 			} else {
@@ -1406,52 +1469,56 @@
 			message.sources = sources;
 		}
 
-		if (choices) {
-			if (choices[0]?.message?.content) {
-				// Non-stream response
-				message.content += choices[0]?.message?.content;
-			} else {
-				// Stream response
-				let value = choices[0]?.delta?.content ?? '';
-				if (message.content == '' && value == '\n') {
-					console.log('Empty response');
+			if (choices) {
+				if (choices[0]?.message?.content) {
+					// Non-stream response
+					message.content += choices[0]?.message?.content;
 				} else {
-					message.content += value;
+					// Stream response
+					const delta = choices[0]?.delta ?? {};
+					let value = delta?.content ?? '';
+					value += consumeGeminiImageDelta(message.id, delta?.image);
+					if (!value) {
+						// Partial image chunks are buffered until the final fragment arrives.
+					} else if (message.content == '' && value == '\n') {
+						console.log('Empty response');
+					} else {
+						message.content += value;
 
-					if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
-						navigator.vibrate(5);
-					}
+						if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
+							navigator.vibrate(5);
+						}
 
-					// J-3-03: Skip TTS sentence parsing when user is not in a voice call
-					// and auto-playback is disabled. getMessageContentParts() involves
-					// regex processing (removeDetails) + sentence splitting on every token.
-					if ($showCallOverlay || $settings?.responseAutoPlayback) {
-						// Emit chat event for TTS
-						const messageContentParts = getMessageContentParts(
-							message.content,
-							$config?.audio?.tts?.split_on ?? 'punctuation'
-						);
-						messageContentParts.pop();
-
-						// dispatch only last sentence and make sure it hasn't been dispatched before
-						if (
-							messageContentParts.length > 0 &&
-							messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-						) {
-							message.lastSentence = messageContentParts[messageContentParts.length - 1];
-							eventTarget.dispatchEvent(
-								new CustomEvent('chat', {
-									detail: {
-										id: message.id,
-										content: messageContentParts[messageContentParts.length - 1]
-									}
-								})
+						// J-3-03: Skip TTS sentence parsing when user is not in a voice call
+						// and auto-playback is disabled. getMessageContentParts() involves
+						// regex processing (removeDetails) + sentence splitting on every token.
+						if ($showCallOverlay || $settings?.responseAutoPlayback) {
+							// Emit chat event for TTS
+							const messageContentParts = getMessageContentParts(
+								message.content,
+								$config?.audio?.tts?.split_on ?? 'punctuation'
 							);
+							messageContentParts.pop();
+
+							// dispatch only last sentence and make sure it hasn't been dispatched before
+							if (
+								messageContentParts.length > 0 &&
+								messageContentParts[messageContentParts.length - 1] !== message.lastSentence
+							) {
+								message.lastSentence = messageContentParts[messageContentParts.length - 1];
+								eventTarget.dispatchEvent(
+									new CustomEvent('chat', {
+										detail: {
+											id: message.id,
+											content: messageContentParts[messageContentParts.length - 1]
+										}
+									})
+								);
+							}
 						}
 					}
 				}
 			}
-		}
 
 		if (content) {
 			// REALTIME_CHAT_SAVE is disabled
@@ -1495,6 +1562,7 @@
 		history.messages[message.id] = message;
 
 		if (done) {
+			clearPendingGeminiImages(message.id, true);
 			message.done = true;
 			message.completedAt = Date.now() / 1000;
 
@@ -2207,15 +2275,19 @@
 			if (res && res.ok && res.body) {
 				const textStream = await createOpenAITextStream(res.body, $settings.splitLargeChunks);
 				for await (const update of textStream) {
-					const { value, done, sources, error, usage } = update;
+					const { value, image, done, sources, error, usage } = update;
 					if (error || done) {
 						break;
 					}
 
-					if (mergedResponse.content == '' && value == '\n') {
+					const appendValue = image?.markdown ?? value;
+					if (!appendValue) {
+						continue;
+					}
+					if (mergedResponse.content == '' && appendValue == '\n') {
 						continue;
 					} else {
-						mergedResponse.content += value;
+						mergedResponse.content += appendValue;
 						history.messages[messageId] = message;
 					}
 

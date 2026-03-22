@@ -1,6 +1,12 @@
 import { EventSourceParserStream } from 'eventsource-parser/stream';
 import type { ParsedEvent } from 'eventsource-parser';
 
+type StreamedImageUpdate = {
+	id: string;
+	markdown: string;
+	mimeType: string;
+};
+
 type TextStreamUpdate = {
 	done: boolean;
 	value: string;
@@ -8,6 +14,7 @@ type TextStreamUpdate = {
 	sources?: any;
 	error?: any;
 	usage?: ResponseUsage;
+	image?: StreamedImageUpdate;
 };
 
 type ResponseUsage = {
@@ -19,6 +26,57 @@ type ResponseUsage = {
 	total_tokens: number;
 	/** Any other fields that aren't part of the base OpenAI spec */
 	[other: string]: unknown;
+};
+
+type PendingImage = {
+	mimeType: string;
+	parts: string[];
+};
+
+const buildMarkdownImage = (mimeType: string, data: string) =>
+	`\n![Generated Image](data:${mimeType};base64,${data})\n`;
+
+const flushPendingImages = (pendingImages: Map<string, PendingImage>) => {
+	if (pendingImages.size > 0) {
+		console.warn('Discarding incomplete streamed Gemini image(s)', pendingImages.size);
+		pendingImages.clear();
+	}
+};
+
+const consumeImageDelta = (
+	pendingImages: Map<string, PendingImage>,
+	imageDelta: any
+): StreamedImageUpdate | null => {
+	if (!imageDelta || typeof imageDelta !== 'object') {
+		return null;
+	}
+
+	const id = typeof imageDelta.id === 'string' && imageDelta.id ? imageDelta.id : null;
+	if (!id) {
+		return null;
+	}
+
+	const mimeType =
+		typeof imageDelta.mime_type === 'string' && imageDelta.mime_type
+			? imageDelta.mime_type
+			: 'image/png';
+	const data = typeof imageDelta.data === 'string' ? imageDelta.data : '';
+	const final = imageDelta.final === true;
+
+	const pending = pendingImages.get(id) ?? { mimeType, parts: [] };
+	pending.mimeType = mimeType || pending.mimeType;
+	if (data) {
+		pending.parts.push(data);
+	}
+	pendingImages.set(id, pending);
+
+	if (!final) {
+		return null;
+	}
+
+	const markdown = buildMarkdownImage(pending.mimeType, pending.parts.join(''));
+	pendingImages.delete(id);
+	return { id, markdown, mimeType: pending.mimeType };
 };
 
 // createOpenAITextStream takes a responseBody with a SSE response,
@@ -41,9 +99,12 @@ export async function createOpenAITextStream(
 async function* openAIStreamToIterator(
 	reader: ReadableStreamDefaultReader<ParsedEvent>
 ): AsyncGenerator<TextStreamUpdate> {
+	const pendingImages = new Map<string, PendingImage>();
+
 	while (true) {
 		const { value, done } = await reader.read();
 		if (done) {
+			flushPendingImages(pendingImages);
 			yield { done: true, value: '' };
 			break;
 		}
@@ -52,6 +113,7 @@ async function* openAIStreamToIterator(
 		}
 		const data = value.data;
 		if (data.startsWith('[DONE]')) {
+			flushPendingImages(pendingImages);
 			yield { done: true, value: '' };
 			break;
 		}
@@ -60,6 +122,7 @@ async function* openAIStreamToIterator(
 			const parsedData = JSON.parse(data);
 
 			if (parsedData.error) {
+				flushPendingImages(pendingImages);
 				yield { done: true, value: '', error: parsedData.error };
 				break;
 			}
@@ -74,10 +137,25 @@ async function* openAIStreamToIterator(
 				continue;
 			}
 
-			yield {
-				done: false,
-				value: parsedData.choices?.[0]?.delta?.content ?? ''
-			};
+			const delta = parsedData.choices?.[0]?.delta ?? {};
+			const image = consumeImageDelta(pendingImages, delta?.image);
+			const textValue = delta?.content ?? '';
+
+			if (textValue) {
+				yield {
+					done: false,
+					value: textValue
+				};
+			}
+
+			if (image) {
+				yield {
+					done: false,
+					value: '',
+					image
+				};
+				continue;
+			}
 		} catch (e) {
 			console.error('Error extracting delta from SSE event:', e);
 		}
@@ -107,8 +185,15 @@ async function* streamLargeDeltasAsRandomChunks(
 			yield textStreamUpdate;
 			continue;
 		}
+		if (textStreamUpdate.image) {
+			yield textStreamUpdate;
+			continue;
+		}
 
 		let content = textStreamUpdate.value;
+		if (content.length === 0) {
+			continue;
+		}
 		if (content.length < 5) {
 			yield { done: false, value: content };
 			continue;

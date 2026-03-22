@@ -32,6 +32,7 @@
 	export let show = false;
 	export let modelIds: string[] = [];
 	export let url = '';
+	export let force_mode = false;
 	export let key = '';
 	export let ollama = false;
 	export let gemini = false;
@@ -45,6 +46,18 @@
 	let newModelId = '';
 	let loading = false;
 	let availableModels: Array<{ id: string; name?: string }> = [];
+
+	const localizeConnectionError = (error: unknown) => {
+		const raw =
+			error instanceof Error ? error.message : typeof error === 'string' ? error : `${error ?? ''}`;
+
+		return raw
+			.replaceAll('Network Problem', $i18n.t('Network Problem'))
+			.replaceAll(
+				'Open WebUI: Server Connection Error',
+				$i18n.t('Open WebUI: Server Connection Error')
+			);
+	};
 
 	// 本地选中状态
 	let selectedIds: Set<string> = new Set();
@@ -148,7 +161,13 @@
 				}));
 			} else {
 				// Use backend proxy to avoid CORS issues
-				data = await verifyOpenAIConnection(localStorage.token, { url, key });
+				data = await verifyOpenAIConnection(localStorage.token, {
+					url,
+					key,
+					config: {
+						force_mode
+					}
+				});
 				availableModels = (data?.data || []).map((m: any) => ({
 					id: m.id,
 					name: m.id
@@ -157,7 +176,11 @@
 
 			toast.success($i18n.t('Found {{count}} models', { count: availableModels.length }));
 		} catch (error) {
-			toast.error($i18n.t('Failed to fetch models: {{error}}', { error: String(error) }));
+			toast.error(
+				$i18n.t('Failed to fetch models: {{error}}', {
+					error: localizeConnectionError(error)
+				})
+			);
 			availableModels = [];
 		} finally {
 			loading = false;

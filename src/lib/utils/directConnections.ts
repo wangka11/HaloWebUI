@@ -4,6 +4,8 @@ export type DirectConnectionConfig = {
 	enable?: boolean;
 	tags?: Tag[];
 	model_ids?: string[];
+	use_responses_api?: boolean;
+	native_file_inputs_enabled?: boolean;
 	/**
 	 * Internal stable identifier used to prefix model IDs to avoid conflicts.
 	 * Kept for backward compatibility with existing configs and chats.

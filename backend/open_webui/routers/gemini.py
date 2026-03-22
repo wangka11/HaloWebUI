@@ -11,6 +11,7 @@ import copy
 import codecs
 import json
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -298,14 +299,182 @@ def _openai_chunk(
     return chunk
 
 
-# Maximum chunk size for streaming content (32KB to be safe with various proxies/browsers)
+# Maximum chunk size for streaming text content (32KB to be safe with various proxies/browsers)
 MAX_STREAM_CHUNK_SIZE = 32 * 1024
+MAX_IMAGE_STREAM_CHUNK_SIZE = 24 * 1024
+
+
+def _build_markdown_image(mime_type: str, data: str) -> str:
+    return f"\n![Generated Image](data:{mime_type};base64,{data})\n"
+
+
+class _StreamWarningLimiter:
+    def __init__(self, stream_id: str, *, per_key_limit: int = 3):
+        self.stream_id = stream_id
+        self.per_key_limit = per_key_limit
+        self._seen: dict[str, int] = {}
+        self._suppressed: dict[str, int] = {}
+
+    def warn(self, key: str, message: str) -> None:
+        seen = self._seen.get(key, 0) + 1
+        self._seen[key] = seen
+        if seen <= self.per_key_limit:
+            log.warning(message)
+        else:
+            self._suppressed[key] = self._suppressed.get(key, 0) + 1
+
+    def flush(self) -> None:
+        for key, count in self._suppressed.items():
+            if count:
+                log.warning(
+                    f"[GEMINI STREAM] Suppressed {count} additional {key} warnings for stream {self.stream_id}"
+                )
+
+
+def _split_sse_events(buf: str) -> tuple[list[str], str]:
+    events = []
+    while "\n\n" in buf:
+        event, buf = buf.split("\n\n", 1)
+        events.append(event)
+    return events, buf
+
+
+def _extract_sse_data_str(event: str) -> Optional[str]:
+    data_lines = []
+    for line in event.splitlines():
+        line = line.rstrip("\r")
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
+        return None
+    data_str = "\n".join(data_lines).strip()
+    return data_str or None
+
+
+def _parse_gemini_json_objects(
+    data_str: str,
+    *,
+    warning_limiter: Optional[_StreamWarningLimiter] = None,
+    phase: str = "event",
+) -> list[dict]:
+    objects: list[dict] = []
+    json_decoder = json.JSONDecoder()
+    pos = 0
+
+    while pos < len(data_str):
+        remaining = data_str[pos:]
+        search_str = remaining.lstrip()
+        if not search_str:
+            break
+
+        try:
+            gemini_obj, idx = json_decoder.raw_decode(search_str)
+        except json.JSONDecodeError as e:
+            head = data_str[:120]
+            if pos == 0:
+                message = f"JSON decode error ({phase}): {e}, head={head}"
+                if warning_limiter:
+                    warning_limiter.warn(f"json_decode_{phase}", message)
+                else:
+                    log.warning(message)
+            else:
+                message = f"JSON decode error ({phase}-stacked): {e} at pos {pos}"
+                if warning_limiter:
+                    warning_limiter.warn(f"json_decode_{phase}_stacked", message)
+                else:
+                    log.warning(message)
+            break
+
+        pos += len(remaining) - len(search_str) + idx
+
+        if not isinstance(gemini_obj, dict):
+            preview = str(gemini_obj)[:120]
+            message = (
+                f"Skipping non-dict Gemini stream payload ({type(gemini_obj).__name__}): {preview}"
+            )
+            if warning_limiter:
+                warning_limiter.warn(f"non_dict_{phase}", message)
+            else:
+                log.warning(message)
+            continue
+
+        objects.append(gemini_obj)
+
+    return objects
+
+
+def _iter_gemini_compat_payloads(
+    gemini_payload: dict, *, allow_drop_response_modalities: bool = True
+) -> list[dict]:
+    payloads: list[dict] = []
+    variants = [
+        {"drop_tools": True},
+        {"drop_tools": True, "drop_thinking": True},
+    ]
+    if allow_drop_response_modalities:
+        variants.append(
+            {
+                "drop_tools": True,
+                "drop_thinking": True,
+                "drop_response_modalities": True,
+            }
+        )
+
+    for variant in variants:
+        compat_payload = _build_compat_payload(gemini_payload, **variant)
+        if compat_payload != gemini_payload and compat_payload not in payloads:
+            payloads.append(compat_payload)
+
+    return payloads
+
+
+def _gemini_usage_to_openai_usage(usage_meta: Optional[dict]) -> Optional[dict]:
+    if not isinstance(usage_meta, dict) or not usage_meta:
+        return None
+
+    usage = {
+        "prompt_tokens": usage_meta.get("promptTokenCount", 0),
+        "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+        "total_tokens": usage_meta.get("totalTokenCount", 0),
+    }
+    if usage_meta.get("thoughtsTokenCount"):
+        usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
+    return usage
+
+
+def _yield_image_chunks(images: list[dict], stream_id: str, model_id: str):
+    for image in images:
+        mime_type = image.get("mime_type", "image/png")
+        data = image.get("data", "")
+        if not data:
+            continue
+
+        image_id = image.get("id") or f"img_{uuid.uuid4().hex}"
+        offset = 0
+        while offset < len(data):
+            chunk_data = data[offset : offset + MAX_IMAGE_STREAM_CHUNK_SIZE]
+            offset += len(chunk_data)
+            final = offset >= len(data)
+            chunk = _openai_chunk(
+                stream_id,
+                model_id,
+                {
+                    "image": {
+                        "id": image_id,
+                        "mime_type": mime_type,
+                        "data": chunk_data,
+                        "final": final,
+                    }
+                },
+                None,
+                0,
+            )
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
 
 def _yield_content_chunks(content: str, stream_id: str, model_id: str):
     """
-    Generator that yields content in chunks to avoid "Chunk too big" errors.
-    Large content (especially base64 images) is split into smaller SSE events.
+    Generator that yields text content in chunks to avoid "Chunk too big" errors.
     """
     if len(content) <= MAX_STREAM_CHUNK_SIZE:
         # Small content, yield as single chunk
@@ -320,6 +489,11 @@ def _yield_content_chunks(content: str, stream_id: str, model_id: str):
             chunk = _openai_chunk(stream_id, model_id, {"content": chunk_content}, None, 0)
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             offset += MAX_STREAM_CHUNK_SIZE
+
+
+def _is_image_generation_model(gemini_model: str) -> bool:
+    image_keywords = ["image", "draw", "paint", "picture", "art", "create-preview"]
+    return any(keyword in gemini_model.lower() for keyword in image_keywords)
 
 
 def _wants_web_search(fd: dict) -> bool:
@@ -467,29 +641,30 @@ def _convert_openai_tools_to_gemini(openai_tools: list) -> list:
     return [{"functionDeclarations": function_declarations}]
 
 
-def _extract_content(candidate: dict, starting_tool_index: int = 0) -> tuple[str, str, str, str, list, int]:
+def _extract_content_segments(
+    candidate: dict, starting_tool_index: int = 0
+) -> tuple[str, list[dict], str, str, list, int]:
     """
-    Extract text + inline image markdown + grounding metadata + thinking content + tool calls from a Gemini candidate.
-    Returns: (text, image_markdown, grounding_markdown, thinking_content, tool_calls, next_tool_index)
+    Extract text + inline images + grounding metadata + thinking content + tool calls from a Gemini candidate.
 
     Args:
         candidate: Gemini API response candidate
         starting_tool_index: The starting index for tool calls (for parallel tool call scenarios)
 
     Returns:
-        Tuple of (text, image_markdown, grounding_markdown, thinking_content, tool_calls, next_tool_index)
+        Tuple of (text, images, grounding_markdown, thinking_content, tool_calls, next_tool_index)
         next_tool_index is the index to use for the next tool call
     """
     # SAFEGUARD: Handle None or invalid candidate
     if candidate is None or not isinstance(candidate, dict):
-        return "", "", "", "", [], starting_tool_index
+        return "", [], "", "", [], starting_tool_index
 
     content = candidate.get("content", {}) or {}
     parts = content.get("parts", []) or []
 
     text_parts = []
     thinking_parts = []
-    image_md_parts = []
+    images = []
     tool_calls = []
     tool_call_index = starting_tool_index  # CRITICAL: Use starting index for parallel tool calls
 
@@ -510,7 +685,7 @@ def _extract_content(candidate: dict, starting_tool_index: int = 0) -> tuple[str
             mime_type = inline_data.get("mimeType", "image/png")
             data = inline_data.get("data", "")
             if data:
-                image_md_parts.append(f"\n![Generated Image](data:{mime_type};base64,{data})\n")
+                images.append({"mime_type": mime_type, "data": data})
         elif "functionCall" in part:
             # Extract Gemini function call and convert to OpenAI format
             function_call = part.get("functionCall", {})
@@ -567,7 +742,142 @@ def _extract_content(candidate: dict, starting_tool_index: int = 0) -> tuple[str
             grounding_md = "\n\n**Sources:**\n" + "\n".join([f"{i+1}. {s}" for i, s in enumerate(web_sources)]) + "\n"
 
     thinking_content = "".join(thinking_parts)
-    return "".join(text_parts), "".join(image_md_parts), grounding_md, thinking_content, tool_calls, tool_call_index
+    return "".join(text_parts), images, grounding_md, thinking_content, tool_calls, tool_call_index
+
+
+def _extract_content(candidate: dict, starting_tool_index: int = 0) -> tuple[str, str, str, str, list, int]:
+    """
+    Extract text + inline image markdown + grounding metadata + thinking content + tool calls from a Gemini candidate.
+    Returns: (text, image_markdown, grounding_markdown, thinking_content, tool_calls, next_tool_index)
+    """
+    text, images, grounding_md, thinking_content, tool_calls, tool_call_index = (
+        _extract_content_segments(candidate, starting_tool_index)
+    )
+    image_md = "".join(
+        _build_markdown_image(image.get("mime_type", "image/png"), image.get("data", ""))
+        for image in images
+        if image.get("data")
+    )
+    return text, image_md, grounding_md, thinking_content, tool_calls, tool_call_index
+
+
+def _build_stream_chunks_from_gemini_obj(
+    gemini_obj: dict,
+    stream_id: str,
+    model_id: str,
+    starting_tool_index: int,
+    *,
+    default_finish_reason: Optional[str] = None,
+) -> tuple[list[str], int, bool]:
+    chunks: list[str] = []
+
+    candidates = gemini_obj.get("candidates") or []
+    if not candidates:
+        return chunks, starting_tool_index, False
+
+    c0 = candidates[0]
+    if c0 is None or not isinstance(c0, dict):
+        return chunks, starting_tool_index, False
+
+    text, images, grounding_md, thinking_content, tool_calls, next_tool_call_index = (
+        _extract_content_segments(c0, starting_tool_index)
+    )
+
+    if thinking_content:
+        thinking_chunk = _openai_chunk(
+            stream_id, model_id, {"reasoning_content": thinking_content}, None, 0
+        )
+        chunks.append(f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n")
+
+    if tool_calls:
+        for tool_call in tool_calls:
+            tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
+            chunks.append(f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n")
+
+    if text:
+        chunks.extend(list(_yield_content_chunks(text, stream_id, model_id)))
+
+    if images:
+        chunks.extend(list(_yield_image_chunks(images, stream_id, model_id)))
+
+    if grounding_md:
+        chunks.extend(list(_yield_content_chunks(grounding_md, stream_id, model_id)))
+
+    finish = _map_finish_reason(c0.get("finishReason")) or default_finish_reason
+    if finish:
+        if tool_calls:
+            finish = "tool_calls"
+        usage = _gemini_usage_to_openai_usage(gemini_obj.get("usageMetadata", {}) or {})
+        fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
+        chunks.append(f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n")
+        return chunks, next_tool_call_index, True
+
+    return chunks, next_tool_call_index, False
+
+
+async def _open_gemini_response(
+    session: aiohttp.ClientSession,
+    attempts: list[tuple[str, dict]],
+    gemini_payload: dict,
+    *,
+    log_prefix: str,
+    allow_drop_response_modalities: bool = True,
+) -> tuple[Optional[aiohttp.ClientResponse], Optional[dict], Optional[int], str]:
+    last_err_text = ""
+    last_status: Optional[int] = None
+
+    for attempt_idx, (attempt_url, attempt_headers) in enumerate(attempts):
+        response = await session.post(attempt_url, json=gemini_payload, headers=attempt_headers)
+        last_status = response.status
+        log.info(f"{log_prefix} Status: {response.status}")
+
+        if response.status == 200:
+            return response, gemini_payload, last_status, last_err_text
+
+        try:
+            last_err_text = await response.text()
+        except Exception as e:
+            last_err_text = f"Failed to read error body: {e}"
+
+        log.error(
+            f"[GEMINI API ERROR] Status: {response.status}, Full response: {last_err_text[:2000]}"
+        )
+        await response.release()
+
+        if response.status in (401, 403):
+            if attempt_idx + 1 < len(attempts):
+                continue
+            break
+
+        if response.status == 400:
+            for compat_payload in _iter_gemini_compat_payloads(
+                gemini_payload,
+                allow_drop_response_modalities=allow_drop_response_modalities,
+            ):
+                log.info("[GEMINI COMPAT] Retrying with stripped payload")
+                retry_response = await session.post(
+                    attempt_url, json=compat_payload, headers=attempt_headers
+                )
+                last_status = retry_response.status
+                log.info(f"{log_prefix} Retry Status: {retry_response.status}")
+
+                if retry_response.status == 200:
+                    return retry_response, compat_payload, last_status, last_err_text
+
+                try:
+                    last_err_text = await retry_response.text()
+                except Exception as e:
+                    last_err_text = f"Failed to read error body: {e}"
+
+                log.error(
+                    f"[GEMINI API ERROR] Status: {retry_response.status}, Full response: {last_err_text[:2000]}"
+                )
+                await retry_response.release()
+            break
+
+        break
+
+    return None, None, last_status, last_err_text
 
 
 ##########################################
@@ -1358,15 +1668,11 @@ async def generate_chat_completion(
     # Build Gemini request
     gemini_payload = {"contents": contents, "generationConfig": {}}
 
-    # Enable image output for image-capable models
-    image_keywords = ["image", "draw", "paint", "picture", "art", "create-preview"]
-    is_image_model = any(keyword in gemini_model.lower() for keyword in image_keywords)
+    # Enable image output for image-capable models.
+    is_image_model = _is_image_generation_model(gemini_model)
     if is_image_model:
         log.info(f"Detected image generation model: {gemini_model}")
         gemini_payload["generationConfig"]["responseModalities"] = ["TEXT", "IMAGE"]
-        if stream:
-            log.info(f"Forcing stream=False for image model {gemini_model}")
-            stream = False
 
     if system_instruction:
         gemini_payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -1546,12 +1852,14 @@ async def generate_chat_completion(
     log.info(f"[GEMINI PAYLOAD DEBUG] Full payload: {json.dumps(gemini_payload, ensure_ascii=False, default=str)[:5000]}")
 
     # Make request to Gemini API
-    endpoint = "streamGenerateContent" if stream else "generateContent"
-    base_gemini_url = f"{url}/models/{gemini_model}:{endpoint}"
-    if stream:
-        base_gemini_url = _add_query_params(base_gemini_url, {"alt": "sse"})
+    non_stream_url = f"{url}/models/{gemini_model}:generateContent"
+    stream_url = _add_query_params(
+        f"{url}/models/{gemini_model}:streamGenerateContent", {"alt": "sse"}
+    )
+    request_url = stream_url if stream else non_stream_url
 
-    attempts = _auth_attempts(base_gemini_url, key or "", api_config)
+    attempts = _auth_attempts(request_url, key or "", api_config)
+    non_stream_attempts = _auth_attempts(non_stream_url, key or "", api_config)
     log.info(
         f"Gemini Chat Request: URL={attempts[0][0]}, AuthType={api_config.get('auth_type', 'x-goog-api-key')}, Stream={stream}"
     )
@@ -1564,47 +1872,62 @@ async def generate_chat_completion(
             buf = ""
             stream_id = f"chatcmpl-gemini-{uuid.uuid4().hex}"
             global_tool_call_index = 0  # CRITICAL: Track tool call index across stream chunks for parallel tool calls
+            warning_limiter = _StreamWarningLimiter(stream_id)
 
             try:
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-                    response = None
-                    last_err_text = ""
-                    last_status = None
+                    response, _used_payload, last_status, last_err_text = await _open_gemini_response(
+                        session,
+                        attempts,
+                        gemini_payload,
+                        log_prefix="Gemini Stream Response",
+                        allow_drop_response_modalities=not is_image_model,
+                    )
 
-                    for attempt_url, attempt_headers in attempts:
-                        response = await session.post(
-                            attempt_url, json=gemini_payload, headers=attempt_headers
+                    if response is None and is_image_model:
+                        log.info(
+                            "[GEMINI STREAM] Falling back to generateContent for image-capable model"
                         )
-                        last_status = response.status
-                        log.info(f"Gemini Stream Response Status: {response.status}")
-
-                        if response.status == 200:
-                            break
-
-                        try:
-                            last_err_text = await response.text()
-                        except Exception as e:
-                            last_err_text = f"Failed to read error body: {e}"
-
-                        log.error(
-                            f"[GEMINI API ERROR] Status: {response.status}, Full response: {last_err_text[:2000]}"
+                        (
+                            fallback_response,
+                            _fallback_payload,
+                            fallback_status,
+                            fallback_err_text,
+                        ) = await _open_gemini_response(
+                            session,
+                            non_stream_attempts,
+                            gemini_payload,
+                            log_prefix="Gemini Chat Fallback Response",
+                            allow_drop_response_modalities=False,
                         )
-                        await response.release()
-                        response = None
+                        if fallback_response is not None:
+                            try:
+                                gemini_response = await fallback_response.json(content_type=None)
+                            finally:
+                                await fallback_response.release()
 
-                        # Retry with the next auth mode for auth-like errors.
-                        if response is None and last_status not in (401, 403):
-                            break
+                            yield f"data: {json.dumps(_openai_chunk(stream_id, model_id, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
+                            stream_chunks, global_tool_call_index, _finished = (
+                                _build_stream_chunks_from_gemini_obj(
+                                    gemini_response,
+                                    stream_id,
+                                    model_id,
+                                    global_tool_call_index,
+                                    default_finish_reason="stop",
+                                )
+                            )
+                            for stream_chunk in stream_chunks:
+                                yield stream_chunk
+                            warning_limiter.flush()
+                            yield "data: [DONE]\n\n"
+                            return
+
+                        last_status = fallback_status if fallback_status is not None else last_status
+                        last_err_text = fallback_err_text or last_err_text
 
                     if response is None:
-                        msg = f"[Gemini API Error {last_status}] {last_err_text[:500]}"
-                        try:
-                            err_json = json.loads(last_err_text)
-                            if "error" in err_json:
-                                msg = f"[Gemini API Error {last_status}] {err_json['error'].get('message', last_err_text[:200])}"
-                        except Exception:
-                            pass
-
+                        parsed_error = _parse_gemini_error_message(last_err_text)
+                        msg = f"[Gemini API Error {last_status}] {(parsed_error or last_err_text)[:500]}"
                         error_chunk = {
                             "error": {
                                 "message": msg,
@@ -1612,10 +1935,12 @@ async def generate_chat_completion(
                                 "code": f"http_{last_status}",
                             }
                         }
+                        warning_limiter.flush()
                         yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         return
-                    else:
+
+                    try:
                         # Optional: send role first (OpenAI-style)
                         yield f"data: {json.dumps(_openai_chunk(stream_id, model_id, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
 
@@ -1623,183 +1948,82 @@ async def generate_chat_completion(
                             if not raw:
                                 continue
 
-                            # Decode bytes to string, handling incomplete UTF-8 sequences
                             chunk_str = decoder.decode(raw, False)
                             if not chunk_str:
                                 continue
                             buf += chunk_str
 
-                            # SSE events are separated by blank line
-                            while "\n\n" in buf:
-                                event, buf = buf.split("\n\n", 1)
+                            events, buf = _split_sse_events(buf)
+                            for event in events:
                                 if not event.strip():
                                     continue
 
-                                # collect all data lines
-                                data_lines = []
-                                for line in event.splitlines():
-                                    line = line.rstrip("\r")
-                                    if line.startswith("data:"):
-                                        data_lines.append(line[5:].lstrip())
-                                if not data_lines:
-                                    continue
-
-                                data_str = "\n".join(data_lines).strip()
+                                data_str = _extract_sse_data_str(event)
                                 if not data_str:
                                     continue
 
                                 if data_str == "[DONE]":
+                                    warning_limiter.flush()
                                     yield "data: [DONE]\n\n"
                                     return
 
-                                # Handle potentially stacked JSONs (e.g. if \n\n was missed or data lines merged)
-                                json_decoder = json.JSONDecoder()
-                                pos = 0
-                                while pos < len(data_str):
-                                    search_str = data_str[pos:].lstrip()
-                                    if not search_str:
-                                        break
-                                    try:
-                                        gemini_obj, idx = json_decoder.raw_decode(search_str)
-                                        # raw_decode returns index relative to search_str
-                                        pos += len(data_str[pos:]) - len(search_str) + idx
-                                        
-                                        candidates = gemini_obj.get("candidates") or []
-                                        if not candidates:
-                                            continue
+                                gemini_objs = _parse_gemini_json_objects(
+                                    data_str,
+                                    warning_limiter=warning_limiter,
+                                    phase="event",
+                                )
+                                for gemini_obj in gemini_objs:
+                                    (
+                                        stream_chunks,
+                                        global_tool_call_index,
+                                        finished,
+                                    ) = _build_stream_chunks_from_gemini_obj(
+                                        gemini_obj,
+                                        stream_id,
+                                        model_id,
+                                        global_tool_call_index,
+                                    )
+                                    for stream_chunk in stream_chunks:
+                                        yield stream_chunk
+                                    if finished:
+                                        warning_limiter.flush()
+                                        yield "data: [DONE]\n\n"
+                                        return
 
-                                        c0 = candidates[0]
-                                        # SAFEGUARD: Skip if candidate is None
-                                        if c0 is None:
-                                            continue
-                                        text, image_md, grounding_md, thinking_content, tool_calls, global_tool_call_index = _extract_content(c0, global_tool_call_index)
-                                        out_text = (text or "") + (image_md or "") + (grounding_md or "")
-
-                                        # 1) yield thinking content first if present (reasoning_content for frontend)
-                                        if thinking_content:
-                                            thinking_chunk = _openai_chunk(stream_id, model_id, {"reasoning_content": thinking_content}, None, 0)
-                                            yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
-
-                                        # 2) yield tool calls if present
-                                        if tool_calls:
-                                            for tool_call in tool_calls:
-                                                tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
-                                                yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
-
-                                        # 3) yield content if present (with chunking for large content like images)
-                                        if out_text:
-                                            for content_chunk in _yield_content_chunks(out_text, stream_id, model_id):
-                                                yield content_chunk
-
-                                        # 4) then yield finish with usage
-                                        finish = _map_finish_reason(c0.get("finishReason") if isinstance(c0, dict) else None)
-                                        if finish:
-                                            # If there are tool calls, override finish_reason to "tool_calls"
-                                            if tool_calls:
-                                                finish = "tool_calls"
-                                            # Extract usage from gemini response
-                                            usage_meta = gemini_obj.get("usageMetadata", {}) or {}
-                                            usage = None
-                                            if usage_meta:
-                                                usage = {
-                                                    "prompt_tokens": usage_meta.get("promptTokenCount", 0),
-                                                    "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
-                                                    "total_tokens": usage_meta.get("totalTokenCount", 0),
-                                                }
-                                                # Add thinking tokens if available
-                                                if usage_meta.get("thoughtsTokenCount"):
-                                                    usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
-                                            fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
-                                            yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
-                                            yield "data: [DONE]\n\n"
-                                            return
-                                            
-                                    except json.JSONDecodeError as e:
-                                        # If we can't decode the *first* object, it might be a partial frame (in main loop)
-                                        # If we are in flush, it's just broken data.
-                                        if pos == 0:
-                                            # Put back and wait for more bytes (rare but safe)
-                                            log.warning(f"JSON decode error (event): {e}, head={data_str[:120]}")
-                                            buf = event + "\n\n" + buf
-                                        else:
-                                            log.warning(f"JSON decode error (stacked): {e} at pos {pos}")
-                                        break
-
-                        # flush remaining
                         tail = buf.strip()
                         if tail:
-                            # try treat as one SSE event too
-                            data_lines = []
-                            for line in tail.splitlines():
-                                line = line.rstrip("\r")
-                                if line.startswith("data:"):
-                                    data_lines.append(line[5:].lstrip())
-                            if data_lines:
-                                data_str = "\n".join(data_lines).strip()
-                            else:
-                                data_str = tail
-
+                            data_str = _extract_sse_data_str(tail) or tail
                             if data_str and data_str != "[DONE]":
-                                json_decoder_flush = json.JSONDecoder()
-                                pos = 0
-                                while pos < len(data_str):
-                                    search_str = data_str[pos:].lstrip()
-                                    if not search_str:
-                                        break
-                                    try:
-                                        gemini_obj, idx = json_decoder_flush.raw_decode(search_str)
-                                        pos += len(data_str[pos:]) - len(search_str) + idx
+                                gemini_objs = _parse_gemini_json_objects(
+                                    data_str,
+                                    warning_limiter=warning_limiter,
+                                    phase="flush",
+                                )
+                                for gemini_obj in gemini_objs:
+                                    (
+                                        stream_chunks,
+                                        global_tool_call_index,
+                                        finished,
+                                    ) = _build_stream_chunks_from_gemini_obj(
+                                        gemini_obj,
+                                        stream_id,
+                                        model_id,
+                                        global_tool_call_index,
+                                    )
+                                    for stream_chunk in stream_chunks:
+                                        yield stream_chunk
+                                    if finished:
+                                        warning_limiter.flush()
+                                        yield "data: [DONE]\n\n"
+                                        return
+                    finally:
+                        await response.release()
 
-                                        candidates = gemini_obj.get("candidates") or []
-                                        if candidates:
-                                            c0 = candidates[0]
-                                            # SAFEGUARD: Skip if candidate is None
-                                            if c0 is None or not isinstance(c0, dict):
-                                                continue
-                                            text, image_md, grounding_md, thinking_content, tool_calls, global_tool_call_index = _extract_content(c0, global_tool_call_index)
-                                            out_text = (text or "") + (image_md or "") + (grounding_md or "")
-
-                                            # Yield thinking content first if present
-                                            if thinking_content:
-                                                thinking_chunk = _openai_chunk(stream_id, model_id, {"reasoning_content": thinking_content}, None, 0)
-                                                yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
-
-                                            # Yield tool calls if present
-                                            if tool_calls:
-                                                for tool_call in tool_calls:
-                                                    tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
-                                                    yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
-
-                                            # Then yield content if present (with chunking for large content)
-                                            if out_text:
-                                                for content_chunk in _yield_content_chunks(out_text, stream_id, model_id):
-                                                    yield content_chunk
-
-                                            finish = _map_finish_reason(c0.get("finishReason") if isinstance(c0, dict) else None)
-                                            if finish:
-                                                # If there are tool calls, override finish_reason to "tool_calls"
-                                                if tool_calls:
-                                                    finish = "tool_calls"
-                                                # Extract usage from gemini response
-                                                usage_meta = gemini_obj.get("usageMetadata", {}) or {}
-                                                usage = None
-                                                if usage_meta:
-                                                    usage = {
-                                                        "prompt_tokens": usage_meta.get("promptTokenCount", 0),
-                                                        "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
-                                                        "total_tokens": usage_meta.get("totalTokenCount", 0),
-                                                    }
-                                                    if usage_meta.get("thoughtsTokenCount"):
-                                                        usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
-                                                fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
-                                                yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
-                                    except json.JSONDecodeError as e:
-                                        log.warning(f"JSON decode error (flush): {e}, head={data_str[:120]}")
-                                        break
-
-                        yield "data: [DONE]\n\n"
+                    warning_limiter.flush()
+                    yield "data: [DONE]\n\n"
 
             except Exception as e:
+                warning_limiter.flush()
                 log.exception(f"Error in stream generator: {e}")
                 error_chunk = {
                     "error": {
@@ -1817,62 +2041,23 @@ async def generate_chat_completion(
     try:
         timeout = aiohttp.ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            last_error = "Gemini API Error"
-            last_status = 500
+            response, _used_payload, last_status, last_err_text = await _open_gemini_response(
+                session,
+                attempts,
+                gemini_payload,
+                log_prefix="Gemini Chat Response",
+                allow_drop_response_modalities=not is_image_model,
+            )
+            if response is None:
+                last_error = _parse_gemini_error_message(last_err_text) or "Gemini API Error"
+                raise HTTPException(status_code=last_status or 500, detail=last_error)
 
-            for attempt_idx, (attempt_url, attempt_headers) in enumerate(attempts):
-                async with session.post(
-                    attempt_url, json=gemini_payload, headers=attempt_headers
-                ) as response:
-                    log.info(f"Gemini Chat Response Status: {response.status}")
-
-                    if response.status == 200:
-                        gemini_response = await response.json(content_type=None)
-                        openai_response = convert_gemini_to_openai(gemini_response, model_id)
-                        return JSONResponse(content=openai_response)
-
-                    error_text = await response.text()
-                    last_status = response.status
-                    last_error = _parse_gemini_error_message(error_text) or "Gemini API Error"
-
-                    # Retry with alternate auth mode on auth-like errors (401/403).
-                    if response.status in (401, 403) and attempt_idx + 1 < len(attempts):
-                        continue
-
-                    # Compatibility retries for 400 (schema/tooling/thinking differences across relays).
-                    if response.status == 400:
-                        for compat_payload in (
-                            _build_compat_payload(gemini_payload, drop_tools=True),
-                            _build_compat_payload(gemini_payload, drop_tools=True, drop_thinking=True),
-                            _build_compat_payload(
-                                gemini_payload,
-                                drop_tools=True,
-                                drop_thinking=True,
-                                drop_response_modalities=True,
-                            ),
-                        ):
-                            if compat_payload == gemini_payload:
-                                continue
-
-                            log.info("[GEMINI COMPAT] Retrying with stripped payload")
-                            async with session.post(
-                                attempt_url, json=compat_payload, headers=attempt_headers
-                            ) as retry_response:
-                                log.info(
-                                    f"Gemini Chat Retry Response Status: {retry_response.status}"
-                                )
-                                if retry_response.status == 200:
-                                    gemini_response = await retry_response.json(content_type=None)
-                                    openai_response = convert_gemini_to_openai(
-                                        gemini_response, model_id
-                                    )
-                                    return JSONResponse(content=openai_response)
-                                retry_text = await retry_response.text()
-                                last_error = _parse_gemini_error_message(retry_text) or last_error
-
-                    raise HTTPException(status_code=response.status, detail=last_error)
-
-            raise HTTPException(status_code=last_status, detail=last_error)
+            try:
+                gemini_response = await response.json(content_type=None)
+            finally:
+                await response.release()
+            openai_response = convert_gemini_to_openai(gemini_response, model_id)
+            return JSONResponse(content=openai_response)
 
     except HTTPException:
         raise

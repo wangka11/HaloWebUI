@@ -440,6 +440,7 @@ from open_webui.utils.chat import (
 from open_webui.utils.middleware import (
     process_chat_payload,
     process_chat_response,
+    should_retry_native_file_inputs_with_rag,
     should_retry_native_web_search_with_halo,
 )
 from open_webui.utils.access_control import has_access
@@ -1352,6 +1353,7 @@ async def chat_completion(
     tasks = form_data.pop("background_tasks", None)
 
     metadata = {}
+    native_file_inputs_retry_form_data = None
     native_web_search_retry_form_data = None
     try:
         if not model_item.get("direct", False):
@@ -1444,6 +1446,7 @@ async def chat_completion(
 
         request.state.metadata = metadata
         form_data["metadata"] = metadata
+        native_file_inputs_retry_form_data = copy.deepcopy(form_data)
         native_web_search_retry_form_data = copy.deepcopy(form_data)
 
         form_data, metadata, events = await process_chat_payload(
@@ -1488,6 +1491,51 @@ async def chat_completion(
             request, response, form_data, user, metadata, model, events, tasks
         )
     except Exception as e:
+        if native_file_inputs_retry_form_data and should_retry_native_file_inputs_with_rag(
+            metadata, e
+        ):
+            retry_form_data = copy.deepcopy(native_file_inputs_retry_form_data)
+            retry_metadata = {
+                **metadata,
+                "disable_native_file_inputs": True,
+                "native_file_input_file_ids": [],
+                "native_file_input_parts_by_message": {},
+            }
+            retry_form_data["metadata"] = retry_metadata
+
+            retry_emitter = get_event_emitter(retry_metadata)
+            if retry_emitter:
+                await retry_emitter(
+                    {
+                        "type": "notification",
+                        "data": {
+                            "type": "info",
+                            "content": (
+                                "Native file inputs are unavailable for this request. "
+                                "Retrying with local document parsing."
+                            ),
+                        },
+                    }
+                )
+
+            try:
+                retry_form_data, retry_metadata, retry_events = await process_chat_payload(
+                    request, retry_form_data, user, retry_metadata, model
+                )
+                response = await chat_completion_handler(request, retry_form_data, user)
+                return await process_chat_response(
+                    request,
+                    response,
+                    retry_form_data,
+                    user,
+                    retry_metadata,
+                    model,
+                    retry_events,
+                    tasks,
+                )
+            except Exception as retry_error:
+                e = retry_error
+
         if native_web_search_retry_form_data and should_retry_native_web_search_with_halo(
             metadata, e
         ):
