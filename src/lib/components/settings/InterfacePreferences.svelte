@@ -491,6 +491,10 @@
 		floatingActionButtons = cloneSettingsSnapshot(floatingActionButtons);
 	};
 
+	const touchBanners = () => {
+		banners = cloneSettingsSnapshot(banners);
+	};
+
 	const buildSectionSnapshot = (): SectionSnapshot => ({
 		appearance: {
 			selectedTheme: normalizeTheme(selectedTheme),
@@ -653,14 +657,18 @@
 		chatDirection;
 		notificationEnabled;
 		notificationSound;
+		banners;
 		richTextInput;
 		promptAutocomplete;
+		enableAutocompleteGeneration;
+		autocompleteGenerationInputMaxLength;
 		showFormattingToolbar;
 		insertPromptAsRichText;
 		largeTextAsFile;
 		copyFormatted;
 		ctrlEnterToSend;
 		globalSystemPrompt;
+		promptSuggestions;
 		titleAutoGenerate;
 		autoTags;
 		autoFollowUps;
@@ -1642,6 +1650,7 @@
 														>
 															<HaloSelect
 																bind:value={banner.type}
+																on:change={touchBanners}
 																options={[
 																	{ value: 'info', label: $i18n.t('Info') },
 																	{ value: 'warning', label: $i18n.t('Warning') },
@@ -1656,6 +1665,7 @@
 																class="flex-1 py-2 px-3 text-xs bg-transparent outline-hidden"
 																placeholder={$i18n.t('Content')}
 																bind:value={banner.content}
+																on:input={touchBanners}
 															/>
 
 															<div class="flex items-center px-2">
@@ -1663,7 +1673,7 @@
 																	content={$i18n.t('Dismissible')}
 																	className="flex h-fit items-center"
 																>
-																	<Switch bind:state={banner.dismissible} />
+																	<Switch bind:state={banner.dismissible} on:change={touchBanners} />
 																</Tooltip>
 															</div>
 														</div>
