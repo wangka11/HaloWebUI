@@ -22,7 +22,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from open_webui.utils.auth import get_admin_user, get_password_hash, get_verified_user
+from open_webui.utils.auth import (
+    get_admin_user,
+    get_password_hash,
+    get_verified_user,
+    invalidate_cached_user,
+)
 from open_webui.utils.user_connections import maybe_migrate_user_connections
 from open_webui.utils.user_tools import maybe_migrate_user_tool_settings
 from open_webui.utils.access_control import get_permissions
@@ -241,6 +246,8 @@ async def update_user_settings_by_session_user(
 
     user = Users.update_user_settings_by_id(user.id, form_data.model_dump())
     if user:
+        invalidate_cached_user(user.id)
+
         if connections_changed:
             from open_webui.utils.models import invalidate_base_model_cache
 

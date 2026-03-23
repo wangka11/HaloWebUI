@@ -1,5 +1,6 @@
 from test.util.abstract_integration_test import AbstractPostgresTest
 from test.util.mock_user import mock_webui_user
+import time
 
 
 def _get_user_by_id(data, param):
@@ -170,6 +171,7 @@ class TestUsers(AbstractPostgresTest):
         self, monkeypatch
     ):
         from main import app
+        from open_webui.utils import auth as auth_utils
 
         invalidated = []
 
@@ -180,6 +182,7 @@ class TestUsers(AbstractPostgresTest):
 
         app.state.BASE_MODELS = ["stale"]
         app.state.MODELS = {"stale": {"id": "stale"}}
+        auth_utils._user_cache["2"] = (time.monotonic(), {"id": "2", "stale": True})
 
         with mock_webui_user(id="2"):
             response = self.fast_api_client.post(
@@ -205,11 +208,13 @@ class TestUsers(AbstractPostgresTest):
         assert invalidated == ["2"]
         assert app.state.BASE_MODELS is None
         assert app.state.MODELS == {}
+        assert "2" not in auth_utils._user_cache
 
     def test_update_user_settings_does_not_invalidate_model_cache_for_unrelated_ui_changes(
         self, monkeypatch
     ):
         from main import app
+        from open_webui.utils import auth as auth_utils
 
         invalidated = []
 
@@ -220,6 +225,7 @@ class TestUsers(AbstractPostgresTest):
 
         app.state.BASE_MODELS = ["keep"]
         app.state.MODELS = {"keep": {"id": "keep"}}
+        auth_utils._user_cache["2"] = (time.monotonic(), {"id": "2", "stale": True})
 
         with mock_webui_user(id="2"):
             response = self.fast_api_client.post(
@@ -233,3 +239,4 @@ class TestUsers(AbstractPostgresTest):
         assert invalidated == []
         assert app.state.BASE_MODELS == ["keep"]
         assert app.state.MODELS == {"keep": {"id": "keep"}}
+        assert "2" not in auth_utils._user_cache

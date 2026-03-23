@@ -61,6 +61,14 @@ def _set_cached_user(user_id: str, user):
         for k in stale:
             del _user_cache[k]
 
+
+def invalidate_cached_user(user_id: Optional[str] = None):
+    if user_id:
+        _user_cache.pop(user_id, None)
+        return
+
+    _user_cache.clear()
+
 ##############
 # Auth Utils
 ##############
