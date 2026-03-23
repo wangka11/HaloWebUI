@@ -135,12 +135,8 @@
 	export let history;
 	export let messageId;
 
-	let message: MessageType = structuredClone(history.messages[messageId]);
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = structuredClone(history.messages[messageId]);
-		}
-	}
+	let message: MessageType = history.messages?.[messageId] as MessageType;
+	$: message = history.messages?.[messageId] as MessageType;
 
 	export let siblings;
 

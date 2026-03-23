@@ -4,7 +4,7 @@
 	import mermaid from 'mermaid';
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
 
-	import { getContext, onDestroy, onMount, tick } from 'svelte';
+	import { getContext, onDestroy, onMount, setContext, tick } from 'svelte';
 	const i18n: Writable<i18nType> = getContext('i18n');
 
 	import { goto } from '$app/navigation';
@@ -189,6 +189,171 @@
 	// 用缓存值打断 reactive 级联：正向同步更新缓存 → 反向 onChange 检测到缓存一致则跳过
 	let _lastSyncedEffort: string | null = null;
 	let _lastSyncedTokens: number | null = null;
+
+	const getRequestStopTokens = () => {
+		const rawStop = params?.stop ?? $settings?.params?.stop;
+		if (!rawStop) {
+			return undefined;
+		}
+
+		return String(rawStop)
+			.split(',')
+			.map((token) => token.trim())
+			.filter(Boolean)
+			.map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')));
+	};
+
+	const collectFloatingRequestFiles = (messages) =>
+		messages
+			.flatMap((message) =>
+				(message?.files ?? []).filter((item) =>
+					['doc', 'file', 'collection', 'web_search_results'].includes(item.type)
+				)
+			)
+			.filter(
+				(item, index, array) =>
+					array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
+			);
+
+	const buildFloatingRequestMessages = async (messages) => {
+		const systemPrompt =
+			params?.system || $settings?.system
+				? promptTemplate(
+						params?.system ?? $settings?.system ?? '',
+						$user?.name,
+						$settings?.userLocation
+							? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
+									console.error(err);
+									return undefined;
+								})
+							: undefined
+					)
+				: null;
+
+		return [
+			systemPrompt
+				? {
+						role: 'system',
+						content: systemPrompt
+					}
+				: undefined,
+			...messages.map((message) => {
+				const textContent = message?.merged?.content ?? processDetails(message?.content ?? '');
+				const imageFiles = (message?.files ?? []).filter((file) => file.type === 'image');
+
+				return {
+					role: message.role,
+					...(imageFiles.length > 0 && message.role === 'user'
+						? {
+								content: [
+									{
+										type: 'text',
+										text: textContent
+									},
+									...imageFiles.map((file) => ({
+										type: 'image_url',
+										image_url: {
+											url: file.url
+										}
+									}))
+								]
+							}
+						: {
+								content: textContent
+							})
+				};
+			})
+		].filter(
+			(message) =>
+				message &&
+				(message.role === 'user' ||
+					(typeof message.content === 'string' && message.content.trim()) ||
+					Array.isArray(message.content))
+		);
+	};
+
+	const buildFloatingChatRequest = async ({
+		modelId,
+		messages,
+		stream = true
+	}: {
+		modelId: string;
+		messages: any[];
+		stream?: boolean;
+	}) => {
+		const model = getModelById(modelId);
+		if (!model) {
+			throw new Error(`Model ${modelId} not found`);
+		}
+
+		const requestMessages = await buildFloatingRequestMessages(messages);
+		const requestedWebSearchMode =
+			$config?.features?.enable_web_search &&
+			($user?.role === 'admin' || $user?.permissions?.features?.web_search)
+				? normalizeWebSearchMode(webSearchMode, 'off')
+				: 'off';
+		const requestFiles = collectFloatingRequestFiles(messages);
+
+		return {
+			stream,
+			model: model.id,
+			messages: requestMessages,
+			params: {
+				...$settings?.params,
+				...params,
+				function_calling: 'default',
+				...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+				...(maxThinkingTokens != null && maxThinkingTokens > 0
+					? { thinking: { type: 'enabled', budget_tokens: maxThinkingTokens } }
+					: {}),
+				format: $settings.requestFormat ?? undefined,
+				keep_alive: $settings.keepAlive ?? undefined,
+				stop: getRequestStopTokens()
+			},
+			files: requestFiles.length > 0 ? requestFiles : undefined,
+			tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
+			tool_servers: $toolServers,
+			features: {
+				memory: $settings?.memory ?? false,
+				image_generation:
+					$config?.features?.enable_image_generation &&
+					($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
+						? imageGenerationEnabled
+						: false,
+				code_interpreter:
+					$config?.features?.enable_code_interpreter &&
+					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
+						? codeInterpreterEnabled
+						: false,
+				web_search: requestedWebSearchMode !== 'off',
+				web_search_mode: requestedWebSearchMode !== 'off' ? requestedWebSearchMode : undefined
+			},
+			variables: {
+				...getPromptVariables(
+					$user?.name,
+					$settings?.userLocation
+						? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
+								console.error(err);
+								return undefined;
+							})
+						: undefined
+				)
+			},
+			session_id: $socket?.id ?? undefined,
+			chat_id: $chatId ?? undefined,
+			preview_tool_compat: true,
+			model_item: getModelById(model.id),
+			...(stream && (model.info?.meta?.capabilities?.usage ?? false)
+				? {
+						stream_options: {
+							include_usage: true
+						}
+					}
+				: {})
+		};
+	};
+
+	setContext('floatingChatRequestFactory', buildFloatingChatRequest);
 
 	const getPreferredDefaultWebSearchMode = (): WebSearchMode =>
 		getPreferredWebSearchMode($settings, $config, 'halo');

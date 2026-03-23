@@ -51,12 +51,8 @@
 	let groupedMessageIdsIdx = {};
 	let selectedModelIdx = null;
 
-	let message = structuredClone(history.messages[messageId]);
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = structuredClone(history.messages[messageId]);
-		}
-	}
+	let message = history.messages?.[messageId];
+	$: message = history.messages?.[messageId];
 
 	const gotoMessage = async (modelIdx, messageIdx) => {
 		// Clamp messageIdx to ensure it's within valid range

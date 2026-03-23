@@ -62,6 +62,10 @@
 			!contentContainerElement?.contains(event.target) &&
 			!buttonsContainerElement?.contains(event.target)
 		) {
+			// Don't dismiss when response is actively showing
+			if (floatingButtonsElement?.hasActiveResponse) {
+				return;
+			}
 			closeFloatingButtons();
 			return;
 		}
@@ -93,13 +97,24 @@
 					if (spaceOnRight < halfScreenWidth) {
 						const right = parentRect.right - rect.right;
 						buttonsContainerElement.style.right = `${right}px`;
-						buttonsContainerElement.style.left = 'auto'; // Reset left
+						buttonsContainerElement.style.left = 'auto';
 					} else {
-						// Enough space, position using 'left'
 						buttonsContainerElement.style.left = `${left}px`;
-						buttonsContainerElement.style.right = 'auto'; // Reset right
+						buttonsContainerElement.style.right = 'auto';
 					}
-					buttonsContainerElement.style.top = `${top + 5}px`; // +5 to add some spacing
+
+					// Smart vertical positioning: show above selection if not enough space below
+					const spaceBelow = parentRect.bottom - rect.bottom;
+					const floatingHeight = buttonsContainerElement.offsetHeight || 40;
+					const margin = 8;
+
+					if (spaceBelow < floatingHeight + margin) {
+						// Not enough space below — position above the selection
+						const topAbove = rect.top - parentRect.top - floatingHeight - margin;
+						buttonsContainerElement.style.top = `${Math.max(0, topAbove)}px`;
+					} else {
+						buttonsContainerElement.style.top = `${top + margin}px`;
+					}
 				}
 			} else {
 				closeFloatingButtons();

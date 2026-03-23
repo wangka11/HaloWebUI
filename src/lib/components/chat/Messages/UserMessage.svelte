@@ -46,12 +46,8 @@
 	let editedContent = '';
 	let messageEditTextAreaElement: HTMLTextAreaElement;
 
-	let message = structuredClone(history.messages[messageId]);
-	$: if (history.messages) {
-		if (JSON.stringify(message) !== JSON.stringify(history.messages[messageId])) {
-			message = structuredClone(history.messages[messageId]);
-		}
-	}
+	let message = history.messages?.[messageId];
+	$: message = history.messages?.[messageId];
 
 	const copyToClipboard = async (text) => {
 		const res = await _copyToClipboard(text);

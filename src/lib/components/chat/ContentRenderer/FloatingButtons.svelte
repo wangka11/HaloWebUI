@@ -3,8 +3,10 @@
 	import { getContext, onDestroy, tick } from 'svelte';
 
 	import { chatCompletion } from '$lib/apis/openai';
+	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import ChatBubble from '$lib/components/icons/ChatBubble.svelte';
 	import LightBlub from '$lib/components/icons/LightBlub.svelte';
+	import { settings } from '$lib/stores';
 	import Markdown from '../Messages/Markdown.svelte';
 	import Skeleton from '../Messages/Skeleton.svelte';
 
@@ -18,11 +20,20 @@
 		prompt: string;
 	};
 
+	type FloatingChatRequestFactory = ((args: {
+		modelId: string;
+		messages: any[];
+		stream?: boolean;
+	}) => Promise<Record<string, unknown>>) | undefined;
+
 	export let id = '';
 	export let model = null;
 	export let messages = [];
 	export let actions: FloatingAction[] = [];
 	export let onAdd = () => {};
+
+	const floatingChatRequestFactory =
+		getContext<FloatingChatRequestFactory>('floatingChatRequestFactory');
 
 	const defaultActions: FloatingAction[] = [
 		{
@@ -46,12 +57,19 @@
 	let selectedAction: FloatingAction | null = null;
 
 	let selectedText = '';
+	let selectedTextForDisplay = '';
+	let userInputForDisplay = '';
 	let floatingInputValue = '';
 
 	let prompt = '';
 	let responseContent: string | null = null;
 	let responseDone = false;
 	let requestController: AbortController | null = null;
+	let responseUsage: Record<string, unknown> | null = null;
+
+	// Expose to parent for dismissal prevention
+	export let hasActiveResponse = false;
+	$: hasActiveResponse = responseContent !== null;
 
 	const autoScroll = async () => {
 		const responseContainer = document.getElementById('response-container');
@@ -79,79 +97,120 @@
 			.replaceAll('{{SELECTED_CONTENT}}', selectedQuotedText);
 	};
 
+	const applySelectionHighlight = () => {
+		try {
+			const selection = window.getSelection();
+			if (selection && selection.rangeCount > 0 && 'highlights' in CSS) {
+				const range = selection.getRangeAt(0).cloneRange();
+				const highlight = new (window as any).Highlight(range);
+				(CSS as any).highlights.set('float-selection', highlight);
+			}
+		} catch (e) {
+			// Graceful degradation
+		}
+	};
+
+	const clearSelectionHighlight = () => {
+		try {
+			if ('highlights' in CSS) {
+				(CSS as any).highlights.delete('float-selection');
+			}
+		} catch (e) {
+			// Graceful degradation
+		}
+	};
+
 	const runAction = async (action: FloatingAction, inputContent = '') => {
 		if (!model) {
 			toast.error($i18n.t('Model not selected'));
 			return;
 		}
 
+		selectedTextForDisplay = selectedText;
+		userInputForDisplay = inputContent;
 		prompt = buildPrompt(action, inputContent);
 		floatingInputValue = '';
 
 		responseContent = '';
 		responseDone = false;
+		responseUsage = null;
 
-		const [res, controller] = await chatCompletion(localStorage.token, {
-			model,
-			messages: [
-				...messages,
-				{
-					role: 'user',
-					content: prompt
-				}
-			].map((message) => ({
-				role: message.role,
-				content: message.content
-			})),
-			stream: true
-		});
-		requestController = controller;
-
-		if (!(res && res.ok)) {
-			toast.error($i18n.t('An error occurred while fetching the explanation'));
-			return;
-		}
-
-		const reader = res.body.getReader();
-		const decoder = new TextDecoder();
+		// Apply dashed underline to selected text
+		applySelectionHighlight();
 
 		try {
-			while (true) {
-				const { done, value } = await reader.read();
+			const requestBody = floatingChatRequestFactory
+				? await floatingChatRequestFactory({
+						modelId: model,
+						messages: [
+							...messages,
+							{
+								role: 'user',
+								content: prompt
+							}
+						],
+						stream: true
+					})
+				: {
+						model,
+						messages: [
+							...messages,
+							{
+								role: 'user',
+								content: prompt
+							}
+						].map((message) => ({
+							role: message.role,
+							content: message.content
+						})),
+						stream: true
+					};
+
+			const [res, controller] = await chatCompletion(localStorage.token, requestBody);
+			requestController = controller;
+
+			if (!(res && res.ok && res.body)) {
+				toast.error($i18n.t('An error occurred while fetching the explanation'));
+				return;
+			}
+
+			const textStream = await createOpenAITextStream(
+				res.body,
+				$settings?.splitLargeChunks ?? false
+			);
+
+			for await (const update of textStream) {
+				const { value, image, done, error, usage } = update;
 				if (done) {
+					responseDone = true;
+					await tick();
+					autoScroll();
 					break;
 				}
 
-				const chunk = decoder.decode(value, { stream: true });
-				const lines = chunk.split('\n').filter((line) => line.trim() !== '');
-
-				for (const line of lines) {
-					if (!line.startsWith('data: ')) {
-						continue;
-					}
-
-					if (line.startsWith('data: [DONE]')) {
-						responseDone = true;
-						await tick();
-						autoScroll();
-						continue;
-					}
-
-					try {
-						const data = JSON.parse(line.slice(6));
-						const delta = data?.choices?.[0]?.delta?.content;
-						if (delta) {
-							responseContent += delta;
-							autoScroll();
-						}
-					} catch (error) {
-						console.error(error);
-					}
+				if (error) {
+					console.error(error);
+					toast.error($i18n.t('An error occurred while fetching the explanation'));
+					break;
 				}
+
+				if (usage) {
+					responseUsage = usage;
+					continue;
+				}
+
+				const appendValue = image?.markdown ?? value;
+				if (!appendValue) {
+					continue;
+				}
+
+				responseContent += appendValue;
+				autoScroll();
 			}
 		} catch (error) {
 			if ((error as Error)?.name !== 'AbortError') {
 				console.error(error);
+				toast.error($i18n.t('An error occurred while fetching the explanation'));
 			}
 		}
 	};
@@ -167,7 +226,8 @@
 				},
 				{
 					role: 'assistant',
-					content: responseContent
+					content: responseContent,
+					...(responseUsage ? { usage: responseUsage } : {})
 				}
 			]
 		});
@@ -179,28 +239,33 @@
 		selectedAction = null;
 		responseContent = null;
 		responseDone = false;
+		responseUsage = null;
 		floatingInput = false;
 		floatingInputValue = '';
+		selectedTextForDisplay = '';
+		userInputForDisplay = '';
+		clearSelectionHighlight();
 	};
 
 	onDestroy(() => {
 		requestController?.abort();
+		clearSelectionHighlight();
 	});
 </script>
 
 <div
 	id={`floating-buttons-${id}`}
-	class="absolute rounded-lg mt-1 text-xs z-9999"
+	class="absolute mt-1 text-xs z-9999 floating-panel-appear"
 	style="display: none"
 >
 	{#if responseContent === null}
 		{#if !floatingInput}
 			<div
-				class="flex flex-row gap-0.5 shrink-0 p-1 bg-white dark:bg-gray-850 dark:text-gray-100 text-medium rounded-lg shadow-xl"
+				class="flex flex-row gap-0.5 shrink-0 px-1.5 py-1 bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl text-gray-600 dark:text-gray-300 rounded-xl shadow-sm border border-gray-200/50 dark:border-gray-700/50"
 			>
 				{#each resolvedActions as action}
 					<button
-						class="px-1 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-sm flex items-center gap-1 min-w-fit"
+						class="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl flex items-center gap-1 min-w-fit transition-all duration-200 hover:scale-110 active:scale-95 dark:hover:text-white hover:text-black"
 						on:click={async () => {
 							selectedText = window.getSelection().toString();
 							selectedAction = action;
@@ -225,12 +290,12 @@
 			</div>
 		{:else}
 			<div
-				class="py-1 flex dark:text-gray-100 bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-850 w-72 rounded-full shadow-xl"
+				class="py-1 flex bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl text-gray-600 dark:text-gray-300 border border-gray-200/50 dark:border-gray-700/50 w-72 rounded-full shadow-sm"
 			>
 				<input
 					type="text"
 					id="floating-message-input"
-					class="ml-5 bg-transparent outline-hidden w-full flex-1 text-sm"
+					class="ml-5 bg-transparent outline-hidden w-full flex-1 text-sm dark:text-gray-100"
 					placeholder={$i18n.t('Ask a question')}
 					bind:value={floatingInputValue}
 					on:keydown={(e) => {
@@ -270,37 +335,85 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="bg-white dark:bg-gray-850 dark:text-gray-100 rounded-xl shadow-xl w-80 max-w-full">
-			<div
-				class="bg-gray-50/50 dark:bg-gray-800 dark:text-gray-100 text-medium rounded-xl px-3.5 py-3 w-full"
+		<div class="relative bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl dark:text-gray-100 rounded-xl shadow-lg border border-gray-200/50 dark:border-gray-700/50 w-80 max-w-full">
+			<!-- Close button -->
+			<button
+				class="absolute top-2 right-2 p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-all duration-200 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 z-10"
+				on:click={closeHandler}
 			>
-				<div class="font-medium">
-					<Markdown id={`${id}-float-prompt`} content={prompt} />
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-3.5">
+					<path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+				</svg>
+			</button>
+
+			<!-- Quote section -->
+			<div class="bg-blue-50/30 dark:bg-blue-900/10 rounded-t-xl px-3.5 py-3 pr-8">
+				<div class="flex items-start gap-2">
+					<div class="w-0.5 self-stretch rounded-full bg-blue-400/60 dark:bg-blue-500/50 shrink-0 min-h-4"></div>
+					<div class="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 italic leading-relaxed">
+						{selectedTextForDisplay}
+					</div>
 				</div>
+				{#if userInputForDisplay}
+					<div class="mt-2 ml-2.5 text-sm text-gray-700 dark:text-gray-200">
+						{userInputForDisplay}
+					</div>
+				{/if}
 			</div>
 
-			<div
-				class="bg-white dark:bg-gray-850 dark:text-gray-100 text-medium rounded-xl px-3.5 py-3 w-full"
-			>
-				<div class=" max-h-80 overflow-y-auto w-full markdown-prose-xs" id="response-container">
+			<!-- Response section -->
+			<div class="px-3.5 py-3 w-full">
+				<div class="max-h-80 overflow-y-auto w-full markdown-prose-xs" id="response-container">
 					{#if (responseContent ?? '').trim() === ''}
 						<Skeleton size="sm" />
 					{:else}
 						<Markdown id={`${id}-float-response`} content={responseContent ?? ''} />
 					{/if}
-
-					{#if responseDone}
-						<div class="flex justify-end pt-3 text-sm font-medium">
-							<button
-								class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
-								on:click={addHandler}
-							>
-								{$i18n.t('Add')}
-							</button>
-						</div>
-					{/if}
 				</div>
+
+				{#if responseDone}
+					<div class="flex justify-end pt-3">
+						<button
+							class="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-200/60 bg-gray-100/80 px-3.5 py-1.5 text-xs leading-none font-medium text-gray-600 transition-colors duration-150 hover:bg-gray-200 active:opacity-70 dark:border-gray-600/40 dark:bg-gray-700/60 dark:text-gray-300 dark:hover:bg-gray-600"
+							on:click={addHandler}
+						>
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 20 20"
+								fill="currentColor"
+								class="size-3.5 shrink-0"
+							>
+								<path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z" />
+							</svg>
+							添加到对话
+						</button>
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}
 </div>
+
+<style>
+	.floating-panel-appear {
+		animation: floating-fade-in 0.3s ease-out both;
+	}
+
+	@keyframes floating-fade-in {
+		from {
+			opacity: 0;
+			transform: translateY(4px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	:global(::highlight(float-selection)) {
+		background: transparent;
+		text-decoration: underline dashed 1.5px;
+		text-decoration-color: rgba(59, 130, 246, 0.4);
+		text-underline-offset: 3px;
+	}
+</style>

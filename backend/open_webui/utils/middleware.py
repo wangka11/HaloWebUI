@@ -1787,7 +1787,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         elif web_search_strategy["effective_mode"] == WEB_SEARCH_MODE_NATIVE:
             form_data["native_web_search"] = True
 
-        if "image_generation" in features and features["image_generation"]:
+        # In native tool-calling mode, image generation should happen through the
+        # `generate_image` tool only. Otherwise the request gets duplicated:
+        # 1) direct pre-generation here, and
+        # 2) a second generation when the model later calls `generate_image`.
+        if (
+            "image_generation" in features
+            and features["image_generation"]
+            and metadata.get("function_calling") != "native"
+        ):
             form_data = await chat_image_generation_handler(
                 request, form_data, extra_params, user
             )
@@ -1908,7 +1916,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Built-in tools are exposed when tool calling is enabled (native or compatibility/default),
     # and are still gated by admin config + permissions.
-    if metadata.get("function_calling") == "native" or tool_ids or tool_servers:
+    if (
+        metadata.get("function_calling") == "native"
+        or tool_ids
+        or tool_servers
+        or metadata.get("preview_tool_compat")
+    ):
         builtin_tools = get_builtin_tools(request, user, metadata)
         if metadata.get("effective_web_search_mode") == WEB_SEARCH_MODE_NATIVE:
             # When model-native web search is active, do not expose Halo web tools in the
@@ -2396,6 +2409,60 @@ async def process_chat_response(
 
         # Handle as a background task
         async def post_response_handler(response, events):
+            def normalize_message_files(files: Any) -> list[dict]:
+                normalized: list[dict] = []
+                seen: set[str] = set()
+
+                def add_image(url: Any):
+                    raw_url = str(url or "").strip()
+                    if not raw_url:
+                        return
+                    item = {"type": "image", "url": raw_url}
+                    key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                    if key in seen:
+                        return
+                    seen.add(key)
+                    normalized.append(item)
+
+                def walk(value: Any):
+                    if isinstance(value, str):
+                        if value.startswith("data:image/"):
+                            add_image(value)
+                        return
+                    if isinstance(value, dict):
+                        value_type = str(value.get("type") or "").strip().lower()
+                        value_url = value.get("url")
+                        if value_url and (not value_type or value_type == "image"):
+                            add_image(value_url)
+                        return
+                    if isinstance(value, list):
+                        for item in value:
+                            walk(item)
+
+                walk(files)
+                return normalized
+
+            def merge_message_files(existing: Any, incoming: Any) -> list[dict]:
+                merged: list[dict] = []
+                seen: set[str] = set()
+
+                for file in [*(existing or []), *(incoming or [])]:
+                    if not isinstance(file, dict):
+                        continue
+                    if str(file.get("type") or "").strip().lower() != "image":
+                        continue
+                    url = str(file.get("url") or "").strip()
+                    if not url:
+                        continue
+                    item = {"type": "image", "url": url}
+                    key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(item)
+
+                return merged
+
             def serialize_content_blocks(content_blocks, raw=False):
                 content = ""
 
@@ -4761,12 +4828,12 @@ async def process_chat_response(
                                 async with governor_lock:
                                     tool_exec_fetch += 1
 
-                        tool_result_files = []
+                        tool_result_files = normalize_message_files(tool_result)
                         if isinstance(tool_result, list):
                             kept_items = []
                             for item in tool_result:
                                 if isinstance(item, str) and item.startswith("data:"):
-                                    tool_result_files.append(item)
+                                    continue
                                 else:
                                     kept_items.append(item)
                             tool_result = kept_items
@@ -4831,6 +4898,8 @@ async def process_chat_response(
 
                     executed_results = await execute_tool_calls_with_governor(response_tool_calls)
                     round_pressure_bump = 0
+
+                    round_message_files: list[dict] = []
 
                     for exec_item in executed_results:
                         tool_name = exec_item.get("tool_name", "")
@@ -4909,17 +4978,46 @@ async def process_chat_response(
                         except Exception:
                             pass
 
+                        exec_item_files = normalize_message_files(exec_item.get("files"))
+                        if exec_item_files:
+                            round_message_files = merge_message_files(
+                                round_message_files, exec_item_files
+                            )
+
                         results.append(
                             {
                                 "tool_call_id": exec_item.get("tool_call_id", ""),
                                 "content": exec_item.get("result", ""),
                                 **(
-                                    {"files": exec_item.get("files")}
-                                    if exec_item.get("files")
+                                    {"files": exec_item_files}
+                                    if exec_item_files
                                     else {}
                                 ),
                             }
                         )
+
+                    if round_message_files:
+                        try:
+                            existing_message = Chats.get_message_by_id_and_message_id(
+                                metadata["chat_id"], metadata["message_id"]
+                            ) or {}
+                            merged_message_files = merge_message_files(
+                                existing_message.get("files"), round_message_files
+                            )
+                            if merged_message_files:
+                                await event_emitter(
+                                    {
+                                        "type": "files",
+                                        "data": {"files": merged_message_files},
+                                    }
+                                )
+                                Chats.upsert_message_to_chat_by_id_and_message_id(
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {"files": merged_message_files},
+                                )
+                        except Exception:
+                            pass
 
                     if round_pressure_bump > 0:
                         low_gain_rounds += 1

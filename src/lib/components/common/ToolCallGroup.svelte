@@ -329,13 +329,15 @@
 						/>
 					{/if}
 
-					{#if selectedDone && typeof files === 'object'}
-						{#each files ?? [] as file}
-							{#if file.startsWith('data:image/')}
-								<Image src={file} alt="Image" />
-							{/if}
-						{/each}
-					{/if}
+						{#if selectedDone && typeof files === 'object'}
+							{#each files ?? [] as file}
+								{#if typeof file === 'string' && file.startsWith('data:image/')}
+									<Image src={file} alt="Image" />
+								{:else if file?.type === 'image' && file?.url}
+									<Image src={file.url} alt="Image" />
+								{/if}
+							{/each}
+						{/if}
 				</div>
 			{/if}
 		</div>
