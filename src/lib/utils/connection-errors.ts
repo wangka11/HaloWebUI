@@ -8,6 +8,8 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 const PROVIDER_PREFIX_RE = /^(OpenAI|Gemini|Anthropic|Ollama):\s*/;
 const INVALID_API_KEY_RE =
 	/invalid_api_key|Incorrect API key provided|invalid api key|authentication failed|unauthorized/i;
+const ACCOUNT_RESOURCE_NOT_FOUND_RE =
+	/\b(?:Function|Model|Resource)\b[\s\S]*?\bNot found for account\b/i;
 const RESPONSES_API_ERROR_RE = /responses api|\/responses/i;
 const HTTP_STATUS_RES = [
 	/Responses API upstream error \((\d{3})\)/i,
@@ -92,6 +94,13 @@ export const formatConnectionErrorToast = (
 		return {
 			title: `${providerPrefix}${t('error.reason.api_auth_error')}`,
 			description: t('connection.error.check_key_matches_url')
+		};
+	}
+
+	if (ACCOUNT_RESOURCE_NOT_FOUND_RE.test(providerStripped)) {
+		return {
+			title: `${providerPrefix}${t('error.title.account_resource_not_found')}`,
+			description: t('error.body.account_resource_not_found')
 		};
 	}
 

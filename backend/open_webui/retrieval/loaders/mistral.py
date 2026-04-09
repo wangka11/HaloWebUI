@@ -1,8 +1,9 @@
 import requests
 import logging
+import mimetypes
 import os
 import sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from langchain_core.documents import Document
 from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
@@ -18,8 +19,12 @@ class MistralLoader:
     """
 
     BASE_API_URL = "https://api.mistral.ai/v1"
+    FILE_UPLOAD_TIMEOUT = 60
+    SIGNED_URL_TIMEOUT = 30
+    OCR_TIMEOUT = 120
+    DELETE_TIMEOUT = 30
 
-    def __init__(self, api_key: str, file_path: str):
+    def __init__(self, api_key: str, file_path: str, mime_type: Optional[str] = None):
         """
         Initializes the loader.
 
@@ -35,6 +40,11 @@ class MistralLoader:
         self.api_key = api_key
         self.file_path = file_path
         self.headers = {"Authorization": f"Bearer {self.api_key}"}
+        self.mime_type = (
+            mime_type
+            or mimetypes.guess_type(self.file_path)[0]
+            or "application/octet-stream"
+        )
 
     def _handle_response(self, response: requests.Response) -> Dict[str, Any]:
         """Checks response status and returns JSON content."""
@@ -62,13 +72,17 @@ class MistralLoader:
 
         try:
             with open(self.file_path, "rb") as f:
-                files = {"file": (file_name, f, "application/pdf")}
+                files = {"file": (file_name, f, self.mime_type)}
                 data = {"purpose": "ocr"}
 
                 upload_headers = self.headers.copy()  # Avoid modifying self.headers
 
                 response = requests.post(
-                    url, headers=upload_headers, files=files, data=data
+                    url,
+                    headers=upload_headers,
+                    files=files,
+                    data=data,
+                    timeout=self.FILE_UPLOAD_TIMEOUT,
                 )
 
             response_data = self._handle_response(response)
@@ -89,7 +103,12 @@ class MistralLoader:
         signed_url_headers = {**self.headers, "Accept": "application/json"}
 
         try:
-            response = requests.get(url, headers=signed_url_headers, params=params)
+            response = requests.get(
+                url,
+                headers=signed_url_headers,
+                params=params,
+                timeout=self.SIGNED_URL_TIMEOUT,
+            )
             response_data = self._handle_response(response)
             signed_url = response_data.get("url")
             if not signed_url:
@@ -119,7 +138,12 @@ class MistralLoader:
         }
 
         try:
-            response = requests.post(url, headers=ocr_headers, json=payload)
+            response = requests.post(
+                url,
+                headers=ocr_headers,
+                json=payload,
+                timeout=self.OCR_TIMEOUT,
+            )
             ocr_response = self._handle_response(response)
             log.info("OCR processing done.")
             log.debug("OCR response: %s", ocr_response)
@@ -135,7 +159,11 @@ class MistralLoader:
         # No specific Accept header needed, default or Authorization is usually sufficient
 
         try:
-            response = requests.delete(url, headers=self.headers)
+            response = requests.delete(
+                url,
+                headers=self.headers,
+                timeout=self.DELETE_TIMEOUT,
+            )
             delete_response = self._handle_response(
                 response
             )  # Check status, ignore response body unless needed
@@ -168,8 +196,7 @@ class MistralLoader:
             # 4. Process results
             pages_data = ocr_response.get("pages")
             if not pages_data:
-                log.warning("No pages found in OCR response.")
-                return [Document(page_content="No text content found", metadata={})]
+                raise RuntimeError("Mistral OCR returned no pages.")
 
             documents = []
             total_pages = len(pages_data)
@@ -186,33 +213,21 @@ class MistralLoader:
                                 "page_label": page_index
                                 + 1,  # 1-based label for convenience
                                 "total_pages": total_pages,
-                                # Add other relevant metadata from page_data if available/needed
-                                # e.g., page_data.get('width'), page_data.get('height')
                             },
                         )
                     )
                 else:
                     log.warning(
-                        f"Skipping page due to missing 'markdown' or 'index'. Data: {page_data}"
+                        "Skipping page due to missing 'markdown' or 'index'. Data: %s",
+                        page_data,
                     )
 
             if not documents:
-                # Case where pages existed but none had valid markdown/index
-                log.warning(
-                    "OCR response contained pages, but none had valid content/index."
+                raise RuntimeError(
+                    "Mistral OCR returned pages, but none had valid markdown content."
                 )
-                return [
-                    Document(
-                        page_content="No text content found in valid pages", metadata={}
-                    )
-                ]
 
             return documents
-
-        except Exception as e:
-            log.error(f"An error occurred during the loading process: {e}")
-            # Return an empty list or a specific error document on failure
-            return [Document(page_content=f"Error during processing: {e}", metadata={})]
         finally:
             # 5. Delete file (attempt even if prior steps failed after upload)
             if file_id:

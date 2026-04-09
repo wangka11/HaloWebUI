@@ -1175,10 +1175,23 @@ def _prepare_documents_for_processing(
     requested_provider: str,
     content: Optional[str] = None,
     allow_cached_collection_docs: bool = False,
-) -> tuple[list[Document], str, str, Optional[str], list[str], str]:
+) -> tuple[
+    list[Document],
+    str,
+    str,
+    Optional[str],
+    list[str],
+    str,
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]:
     resolved_provider = requested_provider
     processing_notice = None
     processing_fallbacks: list[str] = []
+    primary_provider_error = None
+    fallback_provider = None
+    fallback_reason = None
     current_mode = get_file_effective_processing_mode(file)
     current_provider = normalize_document_provider(
         (file.meta or {}).get("processing_provider") or requested_provider,
@@ -1198,6 +1211,9 @@ def _prepare_documents_for_processing(
             None,
             [],
             effective_mode,
+            None,
+            None,
+            None,
         )
 
     if allow_cached_collection_docs:
@@ -1210,6 +1226,9 @@ def _prepare_documents_for_processing(
                 (file.meta or {}).get("processing_notice"),
                 list((file.meta or {}).get("processing_fallbacks") or []),
                 processing_mode,
+                (file.meta or {}).get("primary_provider_error"),
+                (file.meta or {}).get("fallback_provider"),
+                (file.meta or {}).get("fallback_reason"),
             )
 
     can_reuse_cached_text = (
@@ -1226,6 +1245,9 @@ def _prepare_documents_for_processing(
             (file.meta or {}).get("processing_notice"),
             list((file.meta or {}).get("processing_fallbacks") or []),
             processing_mode,
+            (file.meta or {}).get("primary_provider_error"),
+            (file.meta or {}).get("fallback_provider"),
+            (file.meta or {}).get("fallback_reason"),
         )
 
     if file.path and should_extract_for_mode(processing_mode):
@@ -1243,6 +1265,9 @@ def _prepare_documents_for_processing(
             extraction.notice,
             extraction.fallbacks,
             processing_mode,
+            extraction.primary_provider_error,
+            extraction.fallback_provider,
+            extraction.fallback_reason,
         )
 
     text_content = (file.data or {}).get("content", "") or ""
@@ -1253,6 +1278,9 @@ def _prepare_documents_for_processing(
         (file.meta or {}).get("processing_notice"),
         list((file.meta or {}).get("processing_fallbacks") or []),
         processing_mode,
+        (file.meta or {}).get("primary_provider_error"),
+        (file.meta or {}).get("fallback_provider"),
+        (file.meta or {}).get("fallback_reason"),
     )
 
 
@@ -1281,6 +1309,9 @@ def process_file(
         resolved_provider = requested_provider
         processing_notice = None
         processing_fallbacks: list[str] = []
+        primary_provider_error = None
+        fallback_provider = None
+        fallback_reason = None
         text_content = None
         docs: list[Document] = []
 
@@ -1302,6 +1333,9 @@ def process_file(
                 processing_notice,
                 processing_fallbacks,
                 processing_mode,
+                primary_provider_error,
+                fallback_provider,
+                fallback_reason,
             ) = _prepare_documents_for_processing(
                 request,
                 file,
@@ -1317,6 +1351,9 @@ def process_file(
                 processing_notice,
                 processing_fallbacks,
                 processing_mode,
+                primary_provider_error,
+                fallback_provider,
+                fallback_reason,
             ) = _prepare_documents_for_processing(
                 request,
                 file,
@@ -1339,6 +1376,9 @@ def process_file(
                         "requested_document_provider": requested_provider,
                         "processing_notice": None,
                         "processing_fallbacks": [],
+                        "primary_provider_error": None,
+                        "fallback_provider": None,
+                        "fallback_reason": None,
                     },
                 )
                 return {
@@ -1349,6 +1389,9 @@ def process_file(
                     "processing_mode": FILE_PROCESSING_MODE_NATIVE_FILE,
                     "processing_provider": FILE_PROCESSING_MODE_NATIVE_FILE,
                     "notice": None,
+                    "primary_provider_error": None,
+                    "fallback_provider": None,
+                    "fallback_reason": None,
                 }
 
             (
@@ -1358,6 +1401,9 @@ def process_file(
                 processing_notice,
                 processing_fallbacks,
                 processing_mode,
+                primary_provider_error,
+                fallback_provider,
+                fallback_reason,
             ) = _prepare_documents_for_processing(
                 request,
                 file,
@@ -1404,6 +1450,9 @@ def process_file(
                         "requested_document_provider": requested_provider,
                         "processing_notice": processing_notice,
                         "processing_fallbacks": processing_fallbacks,
+                        "primary_provider_error": primary_provider_error,
+                        "fallback_provider": fallback_provider,
+                        "fallback_reason": fallback_reason,
                     },
                 )
 
@@ -1415,6 +1464,9 @@ def process_file(
                     "processing_mode": processing_mode,
                     "processing_provider": resolved_provider,
                     "notice": processing_notice,
+                    "primary_provider_error": primary_provider_error,
+                    "fallback_provider": fallback_provider,
+                    "fallback_reason": fallback_reason,
                 }
         else:
             _clear_standalone_file_collection(file.id)
@@ -1428,6 +1480,9 @@ def process_file(
                     "requested_document_provider": requested_provider,
                     "processing_notice": processing_notice,
                     "processing_fallbacks": processing_fallbacks,
+                    "primary_provider_error": primary_provider_error,
+                    "fallback_provider": fallback_provider,
+                    "fallback_reason": fallback_reason,
                 },
             )
             return {
@@ -1438,6 +1493,9 @@ def process_file(
                 "processing_mode": processing_mode,
                 "processing_provider": resolved_provider,
                 "notice": processing_notice,
+                "primary_provider_error": primary_provider_error,
+                "fallback_provider": fallback_provider,
+                "fallback_reason": fallback_reason,
             }
 
     except Exception as e:
@@ -2269,6 +2327,9 @@ def process_files_batch(
                 processing_notice,
                 processing_fallbacks,
                 _resolved_mode,
+                primary_provider_error,
+                fallback_provider,
+                fallback_reason,
             ) = _prepare_documents_for_processing(
                 request,
                 file,
@@ -2294,6 +2355,9 @@ def process_files_batch(
                     ),
                     "processing_notice": processing_notice,
                     "processing_fallbacks": processing_fallbacks,
+                    "primary_provider_error": primary_provider_error,
+                    "fallback_provider": fallback_provider,
+                    "fallback_reason": fallback_reason,
                 },
             )
             all_docs.extend(docs)
