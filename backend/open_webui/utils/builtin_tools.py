@@ -486,6 +486,12 @@ def get_builtin_tools(
                     reranking_function=get_safe_reranking_runtime(request.app),
                     k_reranker=request.app.state.config.TOP_K_RERANKER,
                     r=request.app.state.config.RELEVANCE_THRESHOLD,
+                    bm25_weight=request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+                    enable_enriched_texts=getattr(
+                        request.app.state.config,
+                        "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
+                        False,
+                    ),
                 )
 
             return query_collection(

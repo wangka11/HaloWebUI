@@ -97,6 +97,7 @@ from open_webui.utils.native_web_search import (
     resolve_effective_native_web_search_support,
     strip_model_prefix,
 )
+from open_webui.utils.payload import merge_additive_payload_fields
 from open_webui.utils.task import (
     get_task_model_id,
     rag_template,
@@ -2811,6 +2812,11 @@ async def chat_completion_files_handler(
                         hybrid_search=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
                         full_context=request.app.state.config.RAG_FULL_CONTEXT,
                         bm25_weight=request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+                        enable_enriched_texts=getattr(
+                            request.app.state.config,
+                            "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
+                            False,
+                        ),
                     ),
                 )
         except Exception as e:
@@ -2823,9 +2829,11 @@ async def chat_completion_files_handler(
 
 
 def apply_params_to_form_data(form_data, model):
-    params = form_data.pop("params", {})
+    params = dict(form_data.pop("params", {}) or {})
+    custom_params = params.pop("custom_params", None)
+
     if model.get("ollama"):
-        form_data["options"] = params
+        form_data["options"] = merge_additive_payload_fields(params, custom_params)
 
         if "format" in params:
             form_data["format"] = params["format"]
@@ -2864,6 +2872,9 @@ def apply_params_to_form_data(form_data, model):
                 )
             except Exception as e:
                 print(f"Error parsing logit_bias: {e}")
+
+        if isinstance(custom_params, dict) and custom_params:
+            form_data["custom_params"] = custom_params
 
     return form_data
 
@@ -3090,8 +3101,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     log.debug(f"{tool_servers=}")
 
     tools_dict = {}
+    tool_calling_disabled = metadata.get("tool_calling_mode") == "off"
 
-    if tool_ids:
+    if tool_ids and not tool_calling_disabled:
         validate_tool_ids_access(tool_ids, user)
 
         # Ensure server-side toolkits are loaded before resolving tool_ids into callable specs.
@@ -3146,7 +3158,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             },
         )
 
-    if tool_servers:
+    if tool_servers and not tool_calling_disabled:
         for tool_server in tool_servers:
             tool_specs = tool_server.pop("specs", [])
 
@@ -3160,10 +3172,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Built-in tools are exposed when tool calling is enabled (native or compatibility/default),
     # and are still gated by admin config + permissions.
     if (
-        metadata.get("function_calling") == "native"
-        or tool_ids
-        or tool_servers
-        or metadata.get("preview_tool_compat")
+        not tool_calling_disabled
+        and (
+            metadata.get("function_calling") == "native"
+            or tool_ids
+            or tool_servers
+            or metadata.get("preview_tool_compat")
+        )
     ):
         builtin_tools = get_builtin_tools(request, user, metadata)
         suppressed_web_tools = _get_builtin_web_tools_to_suppress(
@@ -3251,7 +3266,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             except Exception:
                 # Never block the request due to prompt injection failures.
                 pass
-        else:
+        elif not tool_calling_disabled:
             # If the function calling is not native, then call the tools function calling handler
             try:
                 form_data, flags = await chat_completion_tools_handler(

@@ -115,6 +115,13 @@
 
 	let OllamaUrl = '';
 	let OllamaKey = '';
+	let AzureOpenAIUrl = '';
+	let AzureOpenAIKey = '';
+	let AzureOpenAIVersion = '';
+	let enableAsyncEmbedding = true;
+	let embeddingConcurrentRequests = 5;
+	let selectedExtractionEngine = '';
+	let isBm25WeightCustom = false;
 
 	const normalizeRerankingEngine = (engine?: string | null) => {
 		const normalized = (engine ?? '').trim();
@@ -191,132 +198,130 @@
 		}
 	};
 
-	type DocumentProviderId = keyof typeof defaultDocumentProviderConfigs;
-	type ExpertEngineId = '' | 'tika' | 'docling' | 'document_intelligence' | 'mistral_ocr';
+	type ContentEngineId =
+		| ''
+		| 'tika'
+		| 'docling'
+		| 'datalab_marker'
+		| 'document_intelligence'
+		| 'mistral_ocr'
+		| 'mineru'
+		| 'open_mineru'
+		| 'doc2x'
+		| 'paddleocr'
+		| 'external';
 
-	const documentProviderMeta: Record<
-		DocumentProviderId,
+	const contentEngineMeta: Record<
+		ContentEngineId,
 		{
 			label: string;
 			description: string;
 			requirement: string;
 			limits: string;
+			badge?: string;
 			officialUrl?: string;
 			officialLabel?: string;
-			apiKeyUrl?: string;
-			apiKeyLabel?: string;
-		}
-	> = {
-		local_default: {
-			label: '内置解析',
-			description: '使用 HaloWebUI 内置解析链路处理常见文本与文档格式；适合不依赖第三方文档服务商的场景。',
-			requirement: '无需 API Key，可直接使用。',
-			limits: '复杂扫描件、版面还原或高质量 OCR 场景建议切换下方的文档处理服务商。'
-		},
-		mineru: {
-			label: 'MinerU',
-			description: '标准文档处理服务商，适合正式接入复杂 PDF、Office 文档与扫描版内容。',
-			requirement: '需要配置 MinerU 访问 Token；未配置时无法保存并使用该服务商。',
-			limits: '能力更完整，适合正式使用；官方文档当前给出的限制明显高于 Open MinerU。',
-			officialUrl: 'https://mineru.net/doc/docs/',
-			officialLabel: '查看 MinerU 文档',
-			apiKeyUrl: 'https://mineru.net/apiManage/token',
-			apiKeyLabel: '申请 MinerU Token'
-		},
-		open_mineru: {
-			label: 'Open MinerU',
-			description: '免 Token 的轻量文档处理入口，适合快速试用与小文件场景。',
-			requirement: '无需 API Key，直接使用公开接口。',
-			limits: 'IP 限频；官方当前文档限制为单文件 <= 10MB、<= 20 页。',
-			officialUrl: 'https://mineru.net/doc/docs/',
-			officialLabel: '查看 Open MinerU 限制说明'
-		},
-		doc2x: {
-			label: 'Doc2x',
-			description: '第三方文档解析服务，适合对接 Doc2x 官方或兼容服务端点。',
-			requirement: '需要 API Key。',
-			limits: '能力与配额取决于 Doc2x 服务商配置。',
-			officialUrl: 'https://doc2x.noedgeai.com/',
-			officialLabel: '查看 Doc2x 官网',
-			apiKeyUrl: 'https://open.noedgeai.com/apiKeys',
-			apiKeyLabel: '获取 Doc2x API Key'
-		},
-		paddleocr: {
-			label: 'PaddleOCR',
-			description: '对接自建或第三方 PaddleOCR 服务，适合已有 OCR 服务基础设施的场景。',
-			requirement: '需要可用的 PaddleOCR 服务地址。',
-			limits: '具体能力与并发限制取决于你接入的 PaddleOCR 服务。',
-			officialUrl: 'https://aistudio.baidu.com/paddleocr/',
-			officialLabel: '查看 PaddleOCR 官网'
-		},
-		mistral: {
-			label: 'Mistral OCR',
-			description: '使用 Mistral OCR API 处理 PDF 与图片内容。',
-			requirement: '需要 Mistral API Key。',
-			limits: '更适合 OCR 场景，不建议作为通用文档服务商理解。',
-			officialUrl: 'https://mistral.ai/',
-			officialLabel: '查看 Mistral 官网',
-			apiKeyUrl: 'https://console.mistral.ai/api-keys/',
-			apiKeyLabel: '获取 Mistral API Key'
-		},
-		azure_document_intelligence: {
-			label: 'Azure Document Intelligence',
-			description: '',
-			requirement: '',
-			limits: ''
-		}
-	};
-
-	const expertEngineMeta: Record<
-		ExpertEngineId,
-		{
-			label: string;
-			description: string;
 		}
 	> = {
 		'': {
-			label: '关闭（使用内置解析）',
-			description: '仅使用 HaloWebUI 内置解析链路；不额外接入远程解析服务。'
+			label: '默认（本地解析）',
+			description: '使用 HaloWebUI 本地解析链路处理常见文本、PDF 和 Office 文档，无需额外服务。',
+			requirement: '无需 API 密钥，开箱即用。',
+			limits: '复杂扫描件、版面还原或高质量 OCR 场景建议切换到远程解析引擎。',
+			badge: '推荐'
 		},
 		tika: {
-			label: 'Tika 服务',
-			description: '通过远程 Tika 服务补充更多文档格式解析能力。'
+			label: 'Tika',
+			description: '通过 Apache Tika 服务补充更多文档格式解析能力。',
+			requirement: '需要可访问的 Tika 服务地址。',
+			limits: '适合通用格式兼容，不强调高质量 OCR。',
+			officialUrl: 'https://tika.apache.org/',
+			officialLabel: '查看 Apache Tika'
 		},
 		docling: {
-			label: 'Docling 服务',
-			description: '通过远程 Docling 服务增强复杂文档解析能力。'
+			label: 'Docling',
+			description: '通过 Docling 服务增强复杂文档解析和结构还原能力。',
+			requirement: '需要 Docling 服务地址，可选 API 密钥。',
+			limits: '额外参数较多，建议在需要更强文档结构化时启用。',
+			officialUrl: 'https://docling-project.github.io/docling/',
+			officialLabel: '查看 Docling 文档'
+		},
+		datalab_marker: {
+			label: 'Datalab Marker API',
+			description: '高级 PDF/Office 解析服务，支持更细粒度 OCR、分页和 LLM 增强。',
+			requirement: '需要 Marker API 密钥，可选自定义基础 URL。',
+			limits: '配置较多，适合高质量版面还原和扫描件场景。',
+			badge: '高级',
+			officialUrl: 'https://www.datalab.to/',
+			officialLabel: '查看 Datalab 文档'
 		},
 		document_intelligence: {
-			label: 'Azure Document Intelligence',
-			description: '接入 Azure Document Intelligence 进行企业级文档解析。'
+			label: 'Azure 文档智能',
+			description: '接入 Azure Document Intelligence，进行企业级文档解析。',
+			requirement: '需要服务端点和密钥。',
+			limits: '更适合企业文档流和 Azure 生态。',
+			officialUrl: 'https://learn.microsoft.com/azure/ai-services/document-intelligence/',
+			officialLabel: '查看 Azure 文档'
 		},
 		mistral_ocr: {
-			label: 'Mistral OCR 兼容接口',
-			description: '在内置解析链路上额外挂接 Mistral OCR 兼容接口。'
+			label: 'Mistral OCR',
+			description: '使用 Mistral OCR API 处理 PDF 和图片内容。',
+			requirement: '需要 Mistral API 密钥，可自定义兼容基础 URL。',
+			limits: '更偏 OCR 场景，不建议理解成通用文档服务。',
+			officialUrl: 'https://docs.mistral.ai/capabilities/document/',
+			officialLabel: '查看 Mistral OCR'
+		},
+		mineru: {
+			label: 'MinerU',
+			description: '使用官方 MinerU 引擎，支持本地部署或云端模式。',
+			requirement: '本地模式需要自建服务；云端模式需要 API 密钥。',
+			limits: '主要面向 PDF 解析，高级参数建议按官方文档配置。',
+			officialUrl: 'https://mineru.net/doc/docs/',
+			officialLabel: '查看 MinerU 文档'
+		},
+		open_mineru: {
+			label: 'Open MinerU（免费）',
+			description: '免 Token 的轻量文档处理入口，适合快速试用和小文件场景。',
+			requirement: '无需 API 密钥。',
+			limits: 'IP 限频，能力和文件规模明显低于正式 MinerU。',
+			officialUrl: 'https://mineru.net/doc/docs/',
+			officialLabel: '查看 Open MinerU 说明'
+		},
+		doc2x: {
+			label: 'Doc2x',
+			description: '第三方文档解析服务，适合对接 Doc2x 官方或兼容端点。',
+			requirement: '通常需要 API 密钥。',
+			limits: '能力与配额取决于你接入的 Doc2x 服务端。',
+			officialUrl: 'https://doc2x.noedgeai.com/',
+			officialLabel: '查看 Doc2x 官网'
+		},
+		paddleocr: {
+			label: 'PaddleOCR',
+			description: '对接自建或第三方 PaddleOCR 服务。',
+			requirement: '需要可访问的 PaddleOCR 服务地址。',
+			limits: '解析能力和并发取决于具体服务实现。',
+			officialUrl: 'https://aistudio.baidu.com/paddleocr/',
+			officialLabel: '查看 PaddleOCR 官网'
+		},
+		external: {
+			label: '外部文档加载器',
+			description: '把文件转发到自定义文档解析 API，再回收结构化内容。',
+			requirement: '需要可访问的外部加载器 URL 和 API 密钥。',
+			limits: '返回格式需兼容 OpenWebUI 外部文档加载器协议。',
+			badge: '扩展'
 		}
 	};
 
-	const documentProviderOptions = (Object.keys(defaultDocumentProviderConfigs) as DocumentProviderId[]).filter(
-		(provider) => provider !== 'azure_document_intelligence'
-	).map((provider) => ({
-		value: provider,
-		label: documentProviderMeta[provider].label
-	}));
-
-	const expertEngineOptions = (Object.keys(expertEngineMeta) as ExpertEngineId[]).map((engine) => ({
+	const contentEngineOptions = (Object.keys(contentEngineMeta) as ContentEngineId[]).map((engine) => ({
 		value: engine,
-		label: expertEngineMeta[engine].label
+		label: contentEngineMeta[engine].label,
+		description: contentEngineMeta[engine].description,
+		badge: contentEngineMeta[engine].badge
 	}));
 
-	const getDocumentProviderMeta = (provider: string) =>
-		documentProviderMeta[(provider as DocumentProviderId) || 'local_default'] ??
-		documentProviderMeta.local_default;
-
-	const getExpertEngineMeta = (engine: string) =>
-		expertEngineMeta[(engine as ExpertEngineId) || ''] ?? expertEngineMeta[''];
-
-	$: selectedDocumentProviderMeta = getDocumentProviderMeta(RAGConfig?.DOCUMENT_PROVIDER);
-	$: selectedExpertEngineMeta = getExpertEngineMeta(RAGConfig?.CONTENT_EXTRACTION_ENGINE);
+	const getContentEngineMeta = (engine: string) =>
+		contentEngineMeta[(engine as ContentEngineId) || ''] ?? contentEngineMeta[''];
+	$: selectedContentEngineMeta = getContentEngineMeta(selectedExtractionEngine);
 
 	const mergeProviderConfigs = (value: any = {}) => {
 		const merged = structuredClone(defaultDocumentProviderConfigs);
@@ -326,32 +331,186 @@
 		return merged;
 	};
 
-	const normalizeDocumentsSettings = (value: any) => ({
-		...value,
-		FILE_PROCESSING_DEFAULT_MODE: value?.FILE_PROCESSING_DEFAULT_MODE ?? 'retrieval',
-		DOCUMENT_PROVIDER: value?.DOCUMENT_PROVIDER ?? 'mineru',
-		DOCUMENT_PROVIDER_CONFIGS: mergeProviderConfigs(value?.DOCUMENT_PROVIDER_CONFIGS)
-	});
+	const formatJsonSetting = (value: unknown) =>
+		typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : (value ?? '');
+
+	const deriveExtractionEngine = (value: any): ContentEngineId => {
+		const provider = String(value?.DOCUMENT_PROVIDER ?? '').trim();
+		const engine = String(value?.CONTENT_EXTRACTION_ENGINE ?? '').trim();
+
+		if (provider === 'open_mineru' || provider === 'doc2x' || provider === 'paddleocr') {
+			return provider as ContentEngineId;
+		}
+		if (provider === 'mineru') {
+			return 'mineru';
+		}
+		if (provider === 'mistral' || provider === 'azure_document_intelligence') {
+			return provider === 'mistral' ? 'mistral_ocr' : 'document_intelligence';
+		}
+		if (
+			[
+				'tika',
+				'docling',
+				'datalab_marker',
+				'document_intelligence',
+				'mistral_ocr',
+				'mineru',
+				'external'
+			].includes(engine)
+		) {
+			return engine as ContentEngineId;
+		}
+
+		return '';
+	};
+
+	const applyExtractionEngine = (engine: ContentEngineId) => {
+		selectedExtractionEngine = engine;
+		if (['open_mineru', 'doc2x', 'paddleocr'].includes(engine)) {
+			RAGConfig.DOCUMENT_PROVIDER = engine;
+			RAGConfig.CONTENT_EXTRACTION_ENGINE = '';
+			return;
+		}
+
+		RAGConfig.DOCUMENT_PROVIDER = 'local_default';
+		RAGConfig.CONTENT_EXTRACTION_ENGINE = engine;
+	};
+
+	const normalizeDocumentsSettings = (value: any) => {
+		const mergedConfigs = mergeProviderConfigs(value?.DOCUMENT_PROVIDER_CONFIGS);
+		const legacyProvider = String(value?.DOCUMENT_PROVIDER ?? '').trim();
+		const legacyMineruConfig = mergedConfigs?.mineru ?? {};
+		const legacyMistralConfig = mergedConfigs?.mistral ?? {};
+		const legacyAzureConfig = mergedConfigs?.azure_document_intelligence ?? {};
+		const normalizedTextSplitter = value?.TEXT_SPLITTER === 'markdown' ? '' : (value?.TEXT_SPLITTER ?? '');
+		const enableMarkdownHeaderTextSplitter =
+			value?.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER ??
+			(value?.TEXT_SPLITTER === 'markdown' ? true : false);
+
+		return {
+			...value,
+			FILE_PROCESSING_DEFAULT_MODE:
+				value?.FILE_PROCESSING_DEFAULT_MODE ??
+				(value?.BYPASS_EMBEDDING_AND_RETRIEVAL ? 'full_context' : 'retrieval'),
+			DOCUMENT_PROVIDER: value?.DOCUMENT_PROVIDER ?? 'local_default',
+			DOCUMENT_PROVIDER_CONFIGS: mergedConfigs,
+			PDF_EXTRACT_IMAGES: value?.PDF_EXTRACT_IMAGES ?? false,
+			PDF_LOADING_MODE: value?.PDF_LOADING_MODE ?? value?.PDF_LOADER_MODE ?? '',
+			TIKA_SERVER_URL: value?.TIKA_SERVER_URL ?? '',
+			DOCLING_SERVER_URL: value?.DOCLING_SERVER_URL ?? '',
+			TEXT_SPLITTER: normalizedTextSplitter,
+			ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: enableMarkdownHeaderTextSplitter,
+			CHUNK_MIN_SIZE_TARGET: value?.CHUNK_MIN_SIZE_TARGET ?? 0,
+			RAG_HYBRID_SEARCH_BM25_WEIGHT:
+				value?.RAG_HYBRID_SEARCH_BM25_WEIGHT ?? value?.HYBRID_BM25_WEIGHT ?? 0.5,
+			DATALAB_MARKER_API_KEY: value?.DATALAB_MARKER_API_KEY ?? '',
+			DATALAB_MARKER_API_BASE_URL: value?.DATALAB_MARKER_API_BASE_URL ?? '',
+			DATALAB_MARKER_ADDITIONAL_CONFIG: value?.DATALAB_MARKER_ADDITIONAL_CONFIG ?? '',
+			DATALAB_MARKER_SKIP_CACHE: value?.DATALAB_MARKER_SKIP_CACHE ?? false,
+			DATALAB_MARKER_FORCE_OCR: value?.DATALAB_MARKER_FORCE_OCR ?? false,
+			DATALAB_MARKER_PAGINATE: value?.DATALAB_MARKER_PAGINATE ?? false,
+			DATALAB_MARKER_STRIP_EXISTING_OCR: value?.DATALAB_MARKER_STRIP_EXISTING_OCR ?? false,
+			DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION:
+				value?.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION ?? false,
+			DATALAB_MARKER_FORMAT_LINES: value?.DATALAB_MARKER_FORMAT_LINES ?? false,
+			DATALAB_MARKER_USE_LLM: value?.DATALAB_MARKER_USE_LLM ?? false,
+			DATALAB_MARKER_OUTPUT_FORMAT: value?.DATALAB_MARKER_OUTPUT_FORMAT ?? 'markdown',
+			EXTERNAL_DOCUMENT_LOADER_URL: value?.EXTERNAL_DOCUMENT_LOADER_URL ?? '',
+			EXTERNAL_DOCUMENT_LOADER_API_KEY: value?.EXTERNAL_DOCUMENT_LOADER_API_KEY ?? '',
+			DOCLING_API_KEY: value?.DOCLING_API_KEY ?? '',
+			DOCLING_PARAMS: formatJsonSetting(value?.DOCLING_PARAMS),
+			DOCUMENT_INTELLIGENCE_ENDPOINT:
+				value?.DOCUMENT_INTELLIGENCE_ENDPOINT ??
+				(legacyProvider === 'azure_document_intelligence'
+					? (legacyAzureConfig.endpoint ?? '')
+					: ''),
+			DOCUMENT_INTELLIGENCE_KEY:
+				value?.DOCUMENT_INTELLIGENCE_KEY ??
+				(legacyProvider === 'azure_document_intelligence' ? (legacyAzureConfig.key ?? '') : ''),
+			DOCUMENT_INTELLIGENCE_MODEL: value?.DOCUMENT_INTELLIGENCE_MODEL ?? 'prebuilt-layout',
+			MISTRAL_OCR_API_BASE_URL: value?.MISTRAL_OCR_API_BASE_URL ?? 'https://api.mistral.ai/v1',
+			MISTRAL_OCR_API_KEY:
+				value?.MISTRAL_OCR_API_KEY ??
+				(legacyProvider === 'mistral' ? (legacyMistralConfig.api_key ?? '') : ''),
+			MINERU_API_MODE:
+				value?.MINERU_API_MODE ??
+				(legacyProvider === 'mineru' &&
+				String(legacyMineruConfig.api_key ?? '').trim() !== ''
+					? 'cloud'
+					: 'local'),
+			MINERU_API_URL:
+				value?.MINERU_API_URL ??
+				(legacyProvider === 'mineru' ? 'https://mineru.net/api/v4' : 'http://localhost:8000'),
+			MINERU_API_KEY:
+				value?.MINERU_API_KEY ??
+				(legacyProvider === 'mineru' ? (legacyMineruConfig.api_key ?? '') : ''),
+			MINERU_API_TIMEOUT: value?.MINERU_API_TIMEOUT ?? '300',
+			MINERU_PARAMS:
+				formatJsonSetting(value?.MINERU_PARAMS) ||
+				(legacyProvider === 'mineru'
+					? formatJsonSetting({
+							enable_ocr: legacyMineruConfig.is_ocr ?? false,
+							enable_formula: legacyMineruConfig.enable_formula ?? true,
+							enable_table: legacyMineruConfig.enable_table ?? true,
+							language: legacyMineruConfig.language ?? '',
+							model_version: legacyMineruConfig.model_version ?? 'pipeline',
+							page_ranges: legacyMineruConfig.page_range ?? ''
+						})
+					: ''),
+			ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS:
+				value?.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS ?? false,
+			FILE_IMAGE_COMPRESSION_WIDTH: value?.FILE_IMAGE_COMPRESSION_WIDTH ?? '',
+			FILE_IMAGE_COMPRESSION_HEIGHT: value?.FILE_IMAGE_COMPRESSION_HEIGHT ?? '',
+			ALLOWED_FILE_EXTENSIONS: Array.isArray(value?.ALLOWED_FILE_EXTENSIONS)
+				? value.ALLOWED_FILE_EXTENSIONS.join(', ')
+				: (value?.ALLOWED_FILE_EXTENSIONS ?? '')
+		};
+	};
 
 	let RAGConfig: any = {
 		FILE_PROCESSING_DEFAULT_MODE: 'retrieval',
-		DOCUMENT_PROVIDER: 'mineru',
+		DOCUMENT_PROVIDER: 'local_default',
 		DOCUMENT_PROVIDER_CONFIGS: mergeProviderConfigs(),
 		CONTENT_EXTRACTION_ENGINE: '',
+		DATALAB_MARKER_API_KEY: '',
+		DATALAB_MARKER_API_BASE_URL: '',
+		DATALAB_MARKER_ADDITIONAL_CONFIG: '',
+		DATALAB_MARKER_SKIP_CACHE: false,
+		DATALAB_MARKER_FORCE_OCR: false,
+		DATALAB_MARKER_PAGINATE: false,
+		DATALAB_MARKER_STRIP_EXISTING_OCR: false,
+		DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION: false,
+		DATALAB_MARKER_FORMAT_LINES: false,
+		DATALAB_MARKER_USE_LLM: false,
+		DATALAB_MARKER_OUTPUT_FORMAT: 'markdown',
+		EXTERNAL_DOCUMENT_LOADER_URL: '',
+		EXTERNAL_DOCUMENT_LOADER_API_KEY: '',
 		PDF_EXTRACT_IMAGES: false,
 		PDF_LOADING_MODE: '',
 		TIKA_SERVER_URL: '',
 		DOCLING_SERVER_URL: '',
+		DOCLING_API_KEY: '',
+		DOCLING_PARAMS: '',
 		DOCUMENT_INTELLIGENCE_ENDPOINT: '',
 		DOCUMENT_INTELLIGENCE_KEY: '',
+		DOCUMENT_INTELLIGENCE_MODEL: 'prebuilt-layout',
+		MISTRAL_OCR_API_BASE_URL: 'https://api.mistral.ai/v1',
 		MISTRAL_OCR_API_KEY: '',
+		MINERU_API_MODE: 'local',
+		MINERU_API_URL: 'http://localhost:8000',
+		MINERU_API_KEY: '',
+		MINERU_API_TIMEOUT: '300',
+		MINERU_PARAMS: '',
 		BYPASS_EMBEDDING_AND_RETRIEVAL: false,
 		TEXT_SPLITTER: '',
+		ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: false,
 		CHUNK_SIZE: 0,
 		CHUNK_OVERLAP: 0,
+		CHUNK_MIN_SIZE_TARGET: 0,
 		CHUNK_MIN_SIZE: 0,
 		RAG_FULL_CONTEXT: false,
 		ENABLE_RAG_HYBRID_SEARCH: false,
+		ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: false,
 		TOP_K: 4,
 		TOP_K_RERANKER: 4,
 		RAG_HYBRID_SEARCH_BM25_WEIGHT: 0.5,
@@ -360,47 +519,84 @@
 		RAG_TEMPLATE: '',
 		FILE_MAX_SIZE: 0,
 		FILE_MAX_COUNT: 0,
+		FILE_IMAGE_COMPRESSION_WIDTH: '',
+		FILE_IMAGE_COMPRESSION_HEIGHT: '',
+		ALLOWED_FILE_EXTENSIONS: '',
 		ENABLE_GOOGLE_DRIVE_INTEGRATION: false,
 		ENABLE_ONEDRIVE_INTEGRATION: false
 	};
 
 	const buildSnapshot = () => ({
-		general: {
-			FILE_PROCESSING_DEFAULT_MODE: RAGConfig?.FILE_PROCESSING_DEFAULT_MODE,
-			DOCUMENT_PROVIDER: RAGConfig?.DOCUMENT_PROVIDER,
-			DOCUMENT_PROVIDER_CONFIGS: RAGConfig?.DOCUMENT_PROVIDER_CONFIGS,
-			CONTENT_EXTRACTION_ENGINE: RAGConfig?.CONTENT_EXTRACTION_ENGINE,
-			PDF_EXTRACT_IMAGES: RAGConfig?.PDF_EXTRACT_IMAGES,
-			PDF_LOADING_MODE: RAGConfig?.PDF_LOADING_MODE,
-			TIKA_SERVER_URL: RAGConfig?.TIKA_SERVER_URL,
-			DOCLING_SERVER_URL: RAGConfig?.DOCLING_SERVER_URL,
-			DOCUMENT_INTELLIGENCE_ENDPOINT: RAGConfig?.DOCUMENT_INTELLIGENCE_ENDPOINT,
-			DOCUMENT_INTELLIGENCE_KEY: RAGConfig?.DOCUMENT_INTELLIGENCE_KEY,
-			MISTRAL_OCR_API_KEY: RAGConfig?.MISTRAL_OCR_API_KEY,
-			TEXT_SPLITTER: RAGConfig?.TEXT_SPLITTER,
-			CHUNK_SIZE: RAGConfig?.CHUNK_SIZE,
-			CHUNK_OVERLAP: RAGConfig?.CHUNK_OVERLAP,
-			CHUNK_MIN_SIZE: RAGConfig?.CHUNK_MIN_SIZE,
-			FILE_MAX_SIZE: RAGConfig?.FILE_MAX_SIZE,
-			FILE_MAX_COUNT: RAGConfig?.FILE_MAX_COUNT,
-			ENABLE_GOOGLE_DRIVE_INTEGRATION: RAGConfig?.ENABLE_GOOGLE_DRIVE_INTEGRATION,
-			ENABLE_ONEDRIVE_INTEGRATION: RAGConfig?.ENABLE_ONEDRIVE_INTEGRATION
-		},
-		embedding: {
-			embeddingEngine,
-			embeddingModel,
-			embeddingBatchSize,
-			OpenAIUrl,
-			OpenAIKey,
-			OllamaUrl,
-			OllamaKey
-		},
-		retrieval: {
-			RAG_FULL_CONTEXT: RAGConfig?.RAG_FULL_CONTEXT,
-			ENABLE_RAG_HYBRID_SEARCH: RAGConfig?.ENABLE_RAG_HYBRID_SEARCH,
-			TOP_K: RAGConfig?.TOP_K,
-			TOP_K_RERANKER: RAGConfig?.TOP_K_RERANKER,
-			RAG_HYBRID_SEARCH_BM25_WEIGHT: RAGConfig?.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+			general: {
+				FILE_PROCESSING_DEFAULT_MODE: RAGConfig?.FILE_PROCESSING_DEFAULT_MODE,
+				selectedExtractionEngine,
+				DOCUMENT_PROVIDER: RAGConfig?.DOCUMENT_PROVIDER,
+				DOCUMENT_PROVIDER_CONFIGS: RAGConfig?.DOCUMENT_PROVIDER_CONFIGS,
+				CONTENT_EXTRACTION_ENGINE: RAGConfig?.CONTENT_EXTRACTION_ENGINE,
+				DATALAB_MARKER_API_KEY: RAGConfig?.DATALAB_MARKER_API_KEY,
+				DATALAB_MARKER_API_BASE_URL: RAGConfig?.DATALAB_MARKER_API_BASE_URL,
+				DATALAB_MARKER_ADDITIONAL_CONFIG: RAGConfig?.DATALAB_MARKER_ADDITIONAL_CONFIG,
+				DATALAB_MARKER_SKIP_CACHE: RAGConfig?.DATALAB_MARKER_SKIP_CACHE,
+				DATALAB_MARKER_FORCE_OCR: RAGConfig?.DATALAB_MARKER_FORCE_OCR,
+				DATALAB_MARKER_PAGINATE: RAGConfig?.DATALAB_MARKER_PAGINATE,
+				DATALAB_MARKER_STRIP_EXISTING_OCR: RAGConfig?.DATALAB_MARKER_STRIP_EXISTING_OCR,
+				DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION: RAGConfig?.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION,
+				DATALAB_MARKER_FORMAT_LINES: RAGConfig?.DATALAB_MARKER_FORMAT_LINES,
+				DATALAB_MARKER_USE_LLM: RAGConfig?.DATALAB_MARKER_USE_LLM,
+				DATALAB_MARKER_OUTPUT_FORMAT: RAGConfig?.DATALAB_MARKER_OUTPUT_FORMAT,
+				EXTERNAL_DOCUMENT_LOADER_URL: RAGConfig?.EXTERNAL_DOCUMENT_LOADER_URL,
+				EXTERNAL_DOCUMENT_LOADER_API_KEY: RAGConfig?.EXTERNAL_DOCUMENT_LOADER_API_KEY,
+				PDF_EXTRACT_IMAGES: RAGConfig?.PDF_EXTRACT_IMAGES,
+				PDF_LOADING_MODE: RAGConfig?.PDF_LOADING_MODE,
+				TIKA_SERVER_URL: RAGConfig?.TIKA_SERVER_URL,
+				DOCLING_SERVER_URL: RAGConfig?.DOCLING_SERVER_URL,
+				DOCLING_API_KEY: RAGConfig?.DOCLING_API_KEY,
+				DOCLING_PARAMS: RAGConfig?.DOCLING_PARAMS,
+				DOCUMENT_INTELLIGENCE_ENDPOINT: RAGConfig?.DOCUMENT_INTELLIGENCE_ENDPOINT,
+				DOCUMENT_INTELLIGENCE_KEY: RAGConfig?.DOCUMENT_INTELLIGENCE_KEY,
+				DOCUMENT_INTELLIGENCE_MODEL: RAGConfig?.DOCUMENT_INTELLIGENCE_MODEL,
+				MISTRAL_OCR_API_BASE_URL: RAGConfig?.MISTRAL_OCR_API_BASE_URL,
+				MISTRAL_OCR_API_KEY: RAGConfig?.MISTRAL_OCR_API_KEY,
+				MINERU_API_MODE: RAGConfig?.MINERU_API_MODE,
+				MINERU_API_URL: RAGConfig?.MINERU_API_URL,
+				MINERU_API_KEY: RAGConfig?.MINERU_API_KEY,
+				MINERU_API_TIMEOUT: RAGConfig?.MINERU_API_TIMEOUT,
+				MINERU_PARAMS: RAGConfig?.MINERU_PARAMS,
+				TEXT_SPLITTER: RAGConfig?.TEXT_SPLITTER,
+				ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: RAGConfig?.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER,
+				CHUNK_SIZE: RAGConfig?.CHUNK_SIZE,
+				CHUNK_OVERLAP: RAGConfig?.CHUNK_OVERLAP,
+				CHUNK_MIN_SIZE_TARGET: RAGConfig?.CHUNK_MIN_SIZE_TARGET,
+				CHUNK_MIN_SIZE: RAGConfig?.CHUNK_MIN_SIZE,
+				FILE_MAX_SIZE: RAGConfig?.FILE_MAX_SIZE,
+				FILE_MAX_COUNT: RAGConfig?.FILE_MAX_COUNT,
+				FILE_IMAGE_COMPRESSION_WIDTH: RAGConfig?.FILE_IMAGE_COMPRESSION_WIDTH,
+				FILE_IMAGE_COMPRESSION_HEIGHT: RAGConfig?.FILE_IMAGE_COMPRESSION_HEIGHT,
+				ALLOWED_FILE_EXTENSIONS: RAGConfig?.ALLOWED_FILE_EXTENSIONS,
+				ENABLE_GOOGLE_DRIVE_INTEGRATION: RAGConfig?.ENABLE_GOOGLE_DRIVE_INTEGRATION,
+				ENABLE_ONEDRIVE_INTEGRATION: RAGConfig?.ENABLE_ONEDRIVE_INTEGRATION
+			},
+			embedding: {
+				embeddingEngine,
+				embeddingModel,
+				embeddingBatchSize,
+				OpenAIUrl,
+				OpenAIKey,
+				AzureOpenAIUrl,
+				AzureOpenAIKey,
+				AzureOpenAIVersion,
+				OllamaUrl,
+				OllamaKey,
+				enableAsyncEmbedding,
+				embeddingConcurrentRequests
+			},
+			retrieval: {
+				RAG_FULL_CONTEXT: RAGConfig?.RAG_FULL_CONTEXT,
+				ENABLE_RAG_HYBRID_SEARCH: RAGConfig?.ENABLE_RAG_HYBRID_SEARCH,
+				ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: RAGConfig?.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
+				TOP_K: RAGConfig?.TOP_K,
+				TOP_K_RERANKER: RAGConfig?.TOP_K_RERANKER,
+				RAG_HYBRID_SEARCH_BM25_WEIGHT: RAGConfig?.RAG_HYBRID_SEARCH_BM25_WEIGHT,
 			RELEVANCE_THRESHOLD: RAGConfig?.RELEVANCE_THRESHOLD,
 			RAG_SYSTEM_CONTEXT: RAGConfig?.RAG_SYSTEM_CONTEXT,
 			RAG_TEMPLATE: RAGConfig?.RAG_TEMPLATE,
@@ -413,13 +609,19 @@
 
 	$: snapshot = (
 		RAGConfig,
+		selectedExtractionEngine,
 		embeddingEngine,
 		embeddingModel,
 		embeddingBatchSize,
 		OpenAIUrl,
 		OpenAIKey,
+		AzureOpenAIUrl,
+		AzureOpenAIKey,
+		AzureOpenAIVersion,
 		OllamaUrl,
 		OllamaKey,
+		enableAsyncEmbedding,
+		embeddingConcurrentRequests,
 		rerankingModel,
 		rerankingEngine,
 		rerankingApiUrl,
@@ -461,8 +663,10 @@
 
 		if (section === 'general') {
 			for (const f of Object.keys(snap.general)) {
+				if (f === 'selectedExtractionEngine') continue;
 				RAGConfig[f] = snap.general[f];
 			}
+			selectedExtractionEngine = snap.general.selectedExtractionEngine;
 			RAGConfig = RAGConfig;
 		} else if (section === 'embedding') {
 			embeddingEngine = snap.embedding.embeddingEngine;
@@ -470,8 +674,13 @@
 			embeddingBatchSize = snap.embedding.embeddingBatchSize;
 			OpenAIUrl = snap.embedding.OpenAIUrl;
 			OpenAIKey = snap.embedding.OpenAIKey;
+			AzureOpenAIUrl = snap.embedding.AzureOpenAIUrl;
+			AzureOpenAIKey = snap.embedding.AzureOpenAIKey;
+			AzureOpenAIVersion = snap.embedding.AzureOpenAIVersion;
 			OllamaUrl = snap.embedding.OllamaUrl;
 			OllamaKey = snap.embedding.OllamaKey;
+			enableAsyncEmbedding = snap.embedding.enableAsyncEmbedding;
+			embeddingConcurrentRequests = snap.embedding.embeddingConcurrentRequests;
 		} else if (section === 'retrieval') {
 			for (const f of Object.keys(snap.retrieval)) {
 				if (f === 'rerankingModel') {
@@ -487,6 +696,7 @@
 				}
 			}
 			RAGConfig = RAGConfig;
+			isBm25WeightCustom = (RAGConfig?.RAG_HYBRID_SEARCH_BM25_WEIGHT ?? 0.5) !== 0.5;
 		}
 	};
 
@@ -537,9 +747,24 @@
 			);
 			return false;
 		}
+		if (embeddingEngine === 'azure_openai' && embeddingModel === '') {
+			toast.error(
+				$i18n.t(
+					'Model filesystem path detected. Model shortname is required for update, cannot continue.'
+				)
+			);
+			return false;
+		}
 
-		if ((embeddingEngine === 'openai' && OpenAIKey === '') || OpenAIUrl === '') {
+		if (embeddingEngine === 'openai' && (OpenAIKey === '' || OpenAIUrl === '')) {
 			toast.error($i18n.t('OpenAI URL/Key required.'));
+			return false;
+		}
+		if (
+			embeddingEngine === 'azure_openai' &&
+			(AzureOpenAIKey === '' || AzureOpenAIUrl === '' || AzureOpenAIVersion === '')
+		) {
+			toast.error('Azure OpenAI URL/Key/Version required.');
 			return false;
 		}
 
@@ -548,6 +773,8 @@
 			embedding_engine: embeddingEngine,
 			embedding_model: embeddingModel,
 			embedding_batch_size: embeddingBatchSize,
+			enable_async_embedding: enableAsyncEmbedding,
+			embedding_concurrent_requests: embeddingConcurrentRequests,
 			ollama_config: {
 				key: OllamaKey,
 				url: OllamaUrl
@@ -555,6 +782,11 @@
 			openai_config: {
 				key: OpenAIKey,
 				url: OpenAIUrl
+			},
+			azure_openai_config: {
+				key: AzureOpenAIKey,
+				url: AzureOpenAIUrl,
+				version: AzureOpenAIVersion
 			}
 		}).catch(async (error) => {
 			toast.error(`${error}`);
@@ -613,48 +845,114 @@
 		return false;
 	};
 
+	const parseJsonConfig = (value: unknown, fallback = {}) => {
+		if (typeof value === 'string') {
+			const trimmed = value.trim();
+			if (!trimmed) return fallback;
+			return JSON.parse(trimmed);
+		}
+		if (value && typeof value === 'object') return value;
+		return fallback;
+	};
+
 	const submitHandler = async () => {
-		const usingExpertEngine = RAGConfig.DOCUMENT_PROVIDER === 'local_default';
+		applyExtractionEngine(selectedExtractionEngine as ContentEngineId);
 		const selectedProviderConfig =
 			RAGConfig.DOCUMENT_PROVIDER_CONFIGS?.[RAGConfig.DOCUMENT_PROVIDER] ?? {};
 
 		if (
-			RAGConfig.DOCUMENT_PROVIDER === 'mineru' &&
+			selectedExtractionEngine === 'doc2x' &&
 			String(selectedProviderConfig.api_key ?? '').trim() === ''
 		) {
-			toast.error('MinerU Token required.');
+			toast.error('Doc2x API Key required.');
 			return;
 		}
 
-		if (usingExpertEngine && RAGConfig.CONTENT_EXTRACTION_ENGINE === 'tika' && RAGConfig.TIKA_SERVER_URL === '') {
+		if (selectedExtractionEngine === 'paddleocr' && String(selectedProviderConfig.server_url ?? '').trim() === '') {
+			toast.error('PaddleOCR Server URL required.');
+			return;
+		}
+
+		if (
+			selectedExtractionEngine === 'mineru' &&
+			RAGConfig.MINERU_API_MODE === 'cloud' &&
+			RAGConfig.MINERU_API_KEY === ''
+		) {
+			toast.error('MinerU API Key required for cloud mode.');
+			return;
+		}
+
+		if (selectedExtractionEngine === 'external' && RAGConfig.EXTERNAL_DOCUMENT_LOADER_URL === '') {
+			toast.error('External Document Loader URL required.');
+			return;
+		}
+		if (
+			selectedExtractionEngine === 'external' &&
+			String(RAGConfig.EXTERNAL_DOCUMENT_LOADER_API_KEY ?? '').trim() === ''
+		) {
+			toast.error('External Document Loader API Key required.');
+			return;
+		}
+		if (selectedExtractionEngine === 'tika' && RAGConfig.TIKA_SERVER_URL === '') {
 			toast.error($i18n.t('Tika Server URL required.'));
 			return;
 		}
-		if (
-			usingExpertEngine &&
-			RAGConfig.CONTENT_EXTRACTION_ENGINE === 'docling' &&
-			RAGConfig.DOCLING_SERVER_URL === ''
-		) {
+		if (selectedExtractionEngine === 'docling' && RAGConfig.DOCLING_SERVER_URL === '') {
 			toast.error($i18n.t('Docling Server URL required.'));
 			return;
 		}
+		if (selectedExtractionEngine === 'datalab_marker' && RAGConfig.DATALAB_MARKER_API_KEY === '') {
+			toast.error('Datalab Marker API Key required.');
+			return;
+		}
+		if (
+			selectedExtractionEngine === 'datalab_marker' &&
+			RAGConfig.DATALAB_MARKER_ADDITIONAL_CONFIG &&
+			RAGConfig.DATALAB_MARKER_ADDITIONAL_CONFIG.trim() !== ''
+		) {
+			try {
+				JSON.parse(RAGConfig.DATALAB_MARKER_ADDITIONAL_CONFIG);
+			} catch (e) {
+				toast.error('Invalid JSON format in Datalab Marker Additional Config.');
+				return;
+			}
+		}
 
 		if (
-			usingExpertEngine &&
-			RAGConfig.CONTENT_EXTRACTION_ENGINE === 'document_intelligence' &&
+			selectedExtractionEngine === 'document_intelligence' &&
 			(RAGConfig.DOCUMENT_INTELLIGENCE_ENDPOINT === '' ||
 				RAGConfig.DOCUMENT_INTELLIGENCE_KEY === '')
 		) {
 			toast.error($i18n.t('Document Intelligence endpoint and key required.'));
 			return;
 		}
-		if (
-			usingExpertEngine &&
-			RAGConfig.CONTENT_EXTRACTION_ENGINE === 'mistral_ocr' &&
-			RAGConfig.MISTRAL_OCR_API_KEY === ''
-		) {
+		if (selectedExtractionEngine === 'mistral_ocr' && RAGConfig.MISTRAL_OCR_API_KEY === '') {
 			toast.error($i18n.t('Mistral OCR API Key required.'));
 			return;
+		}
+		if (
+			selectedExtractionEngine === 'mineru' &&
+			String(RAGConfig.MINERU_API_URL ?? '').trim() === ''
+		) {
+			toast.error('MinerU API URL required.');
+			return;
+		}
+
+		if (selectedExtractionEngine === 'docling' && typeof RAGConfig.DOCLING_PARAMS === 'string') {
+			try {
+				parseJsonConfig(RAGConfig.DOCLING_PARAMS);
+			} catch (e) {
+				toast.error('Invalid JSON format in Docling Parameters.');
+				return;
+			}
+		}
+		if (selectedExtractionEngine === 'mineru' && typeof RAGConfig.MINERU_PARAMS === 'string') {
+			try {
+				parseJsonConfig(RAGConfig.MINERU_PARAMS);
+			} catch (e) {
+				toast.error('Invalid JSON format in MinerU Parameters.');
+				return;
+			}
 		}
 
 		if (RAGConfig.FILE_PROCESSING_DEFAULT_MODE === 'retrieval') {
@@ -671,11 +969,31 @@
 			}
 		}
 
-		await updateRAGConfig(localStorage.token, RAGConfig);
+		if (!isBm25WeightCustom) {
+			RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT = 0.5;
+		}
+
+		const normalizedAllowedExtensions = String(RAGConfig.ALLOWED_FILE_EXTENSIONS ?? '')
+			.split(',')
+			.map((ext) => ext.trim().replace(/^\./, '').toLowerCase())
+			.filter((ext) => ext !== '');
+
+		try {
+			await updateRAGConfig(localStorage.token, {
+				...RAGConfig,
+				ALLOWED_FILE_EXTENSIONS: normalizedAllowedExtensions,
+				DOCLING_PARAMS: parseJsonConfig(RAGConfig.DOCLING_PARAMS),
+				MINERU_PARAMS: parseJsonConfig(RAGConfig.MINERU_PARAMS)
+			});
+		} catch (error) {
+			toast.error(`${error}`);
+			return;
+		}
 		await tick();
 		await tick();
 		startBaselineSync();
 		initialSnapshot = cloneSettingsSnapshot(buildSnapshot());
+		toast.success('文档设置已保存。');
 		dispatch('save');
 	};
 
@@ -686,12 +1004,18 @@
 			embeddingEngine = embeddingConfig.embedding_engine;
 			embeddingModel = embeddingConfig.embedding_model;
 			embeddingBatchSize = embeddingConfig.embedding_batch_size ?? 1;
+			enableAsyncEmbedding = embeddingConfig.enable_async_embedding ?? true;
+			embeddingConcurrentRequests = embeddingConfig.embedding_concurrent_requests ?? 5;
 
-			OpenAIKey = embeddingConfig.openai_config.key;
-			OpenAIUrl = embeddingConfig.openai_config.url;
+			OpenAIKey = embeddingConfig.openai_config?.key ?? '';
+			OpenAIUrl = embeddingConfig.openai_config?.url ?? '';
 
-			OllamaKey = embeddingConfig.ollama_config.key;
-			OllamaUrl = embeddingConfig.ollama_config.url;
+			AzureOpenAIKey = embeddingConfig.azure_openai_config?.key ?? '';
+			AzureOpenAIUrl = embeddingConfig.azure_openai_config?.url ?? '';
+			AzureOpenAIVersion = embeddingConfig.azure_openai_config?.version ?? '';
+
+			OllamaKey = embeddingConfig.ollama_config?.key ?? '';
+			OllamaUrl = embeddingConfig.ollama_config?.url ?? '';
 		}
 	};
 
@@ -714,6 +1038,8 @@
 		]);
 
 		RAGConfig = normalizeDocumentsSettings(ragRes ?? {});
+		selectedExtractionEngine = deriveExtractionEngine(RAGConfig);
+		isBm25WeightCustom = (RAGConfig?.RAG_HYBRID_SEARCH_BM25_WEIGHT ?? 0.5) !== 0.5;
 		runtimeCapabilities = ragRes?.capabilities ?? runtimeCapabilities;
 		await tick();
 		await tick();
@@ -901,278 +1227,329 @@
 							</div>
 						</div>
 
-							<div class="glass-item p-5">
-								<div class="mb-3 flex items-center justify-between gap-4">
-									<div class="text-sm font-medium">文档处理服务商</div>
-									<HaloSelect
-										bind:value={RAGConfig.DOCUMENT_PROVIDER}
-										options={documentProviderOptions}
-										className="w-fit"
-									/>
-								</div>
-								<div class="text-xs text-gray-500 dark:text-gray-400">
-									{selectedDocumentProviderMeta.description}
-								</div>
-								<div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-									<div class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
-										<div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-											接入要求
-										</div>
-										<div class="mt-1 text-sm text-gray-700 dark:text-gray-200">
-											{selectedDocumentProviderMeta.requirement}
-										</div>
+						<div class="glass-item p-5">
+							<div class="mb-3 flex items-center justify-between gap-4">
+								<div class="text-sm font-medium">内容提取引擎</div>
+								<HaloSelect
+									bind:value={selectedExtractionEngine}
+									options={contentEngineOptions}
+									className="w-fit"
+									contentClassName="w-[22rem]"
+									on:change={(e) => {
+										applyExtractionEngine(e.detail.value);
+									}}
+								/>
+							</div>
+							<div class="text-xs text-gray-500 dark:text-gray-400">
+								{selectedContentEngineMeta.description}
+							</div>
+							<div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+								<div class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+									<div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+										接入要求
 									</div>
-									<div class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
-										<div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-											能力与限制
-										</div>
-										<div class="mt-1 text-sm text-gray-700 dark:text-gray-200">
-											{selectedDocumentProviderMeta.limits}
-										</div>
+									<div class="mt-1 text-sm text-gray-700 dark:text-gray-200">
+										{selectedContentEngineMeta.requirement}
 									</div>
 								</div>
-								{#if selectedDocumentProviderMeta.officialUrl || selectedDocumentProviderMeta.apiKeyUrl}
-									<div class="mt-3 flex flex-wrap gap-4 text-xs">
-										{#if selectedDocumentProviderMeta.officialUrl}
-											<a
-												class="text-sky-600 hover:underline dark:text-sky-400"
-												href={selectedDocumentProviderMeta.officialUrl}
-												target="_blank"
-												rel="noreferrer"
-											>
-												{selectedDocumentProviderMeta.officialLabel ?? '查看官方文档'}
-											</a>
-										{/if}
-										{#if selectedDocumentProviderMeta.apiKeyUrl}
-											<a
-												class="text-sky-600 hover:underline dark:text-sky-400"
-												href={selectedDocumentProviderMeta.apiKeyUrl}
-												target="_blank"
-												rel="noreferrer"
-											>
-												{selectedDocumentProviderMeta.apiKeyLabel ?? '获取 API Key'}
-											</a>
-										{/if}
+								<div class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+									<div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+										能力与限制
 									</div>
-								{/if}
-
-								<div class="mt-4">
-									{#if RAGConfig.DOCUMENT_PROVIDER === 'mineru'}
-										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-											<div>
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API Base URL</div>
-												<input
-													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-													bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mineru.api_base_url}
-												/>
-											</div>
-										<div>
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">访问 Token（必填）</div>
-											<SensitiveInput
-												placeholder="填写 MinerU Token"
-												bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mineru.api_key}
-											/>
-										</div>
-											<div>
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Model Version</div>
-												<HaloSelect
-													bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mineru.model_version}
-													options={[
-														{ value: 'vlm', label: 'VLM' },
-														{ value: 'pipeline', label: 'Pipeline' }
-													]}
-													className="w-full"
-												/>
-											</div>
-										</div>
-										<details class="mt-3 rounded-2xl border border-dashed border-gray-200/80 px-4 py-3 dark:border-gray-700/80">
-											<summary class="cursor-pointer text-xs font-medium text-gray-500 dark:text-gray-400">
-												高级选项
-											</summary>
-											<div class="mt-3">
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">请求标识（可选）</div>
-												<input
-													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-													placeholder="可留空，默认使用用户 ID"
-													bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mineru.token}
-												/>
-											</div>
-										</details>
-										{#if String(RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mineru.api_key ?? '').trim() === ''}
-											<div class="mt-3 text-xs text-amber-600 dark:text-amber-400">
-												当前选择的是 MinerU。保存前必须先填写访问 Token，否则上传文档时会直接失败。
-											</div>
-										{/if}
-									{:else if RAGConfig.DOCUMENT_PROVIDER === 'open_mineru'}
-										<div>
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API Base URL</div>
-											<input
-												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.open_mineru.api_base_url}
-											/>
-										</div>
-									{:else if RAGConfig.DOCUMENT_PROVIDER === 'doc2x'}
-										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-											<div>
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API Base URL</div>
-												<input
-													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-													bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.doc2x.api_base_url}
-												/>
-											</div>
-											<div>
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API Key</div>
-												<SensitiveInput
-													placeholder="Doc2x API Key"
-													bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.doc2x.api_key}
-												/>
-											</div>
-										</div>
-									{:else if RAGConfig.DOCUMENT_PROVIDER === 'paddleocr'}
-										<div>
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Server URL</div>
-											<input
-												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												placeholder="http://localhost:8080/ocr"
-												bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.paddleocr.server_url}
-											/>
-										</div>
-									{:else if RAGConfig.DOCUMENT_PROVIDER === 'mistral'}
-										<div>
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API Key</div>
-											<SensitiveInput
-												placeholder="Mistral API Key"
-												bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.mistral.api_key}
-											/>
-										</div>
-									{:else}
-										<div class="rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 text-xs text-gray-500 dark:border-gray-700/70 dark:bg-gray-900/40 dark:text-gray-400">
-											当前使用的是内置解析链路。若需要对接 Tika、Docling、Azure 或 Mistral OCR 兼容接口，请使用下方的“专家解析设置”。
-										</div>
-									{/if}
+									<div class="mt-1 text-sm text-gray-700 dark:text-gray-200">
+										{selectedContentEngineMeta.limits}
+									</div>
 								</div>
 							</div>
+							{#if selectedContentEngineMeta.officialUrl}
+								<div class="mt-3 flex flex-wrap gap-4 text-xs">
+									<a
+										class="text-sky-600 hover:underline dark:text-sky-400"
+										href={selectedContentEngineMeta.officialUrl}
+										target="_blank"
+										rel="noreferrer"
+									>
+										{selectedContentEngineMeta.officialLabel ?? '查看官方文档'}
+									</a>
+								</div>
+							{/if}
 
-							{#if RAGConfig.DOCUMENT_PROVIDER === 'local_default'}
-								<div class="glass-item p-5">
-									<div class="mb-3 flex items-center justify-between gap-4">
-										<div class="text-sm font-medium">专家解析设置</div>
+							<div class="mt-4 space-y-3">
+								{#if selectedExtractionEngine === ''}
+									<div class="flex items-center justify-between gap-4">
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">PDF 图像提取（OCR）</div>
+										<Switch bind:state={RAGConfig.PDF_EXTRACT_IMAGES} />
+									</div>
+									<div>
+										<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">PDF 加载模式</div>
 										<HaloSelect
-											bind:value={RAGConfig.CONTENT_EXTRACTION_ENGINE}
-											options={expertEngineOptions}
-											className="w-fit"
+											bind:value={RAGConfig.PDF_LOADING_MODE}
+											options={[
+												{ value: '', label: '按页（默认）' },
+												{ value: 'single', label: '合并为单文档' }
+											]}
+											className="w-full"
 										/>
 									</div>
-									<div class="text-xs text-gray-500 dark:text-gray-400">
-										{selectedExpertEngineMeta.description}
-									</div>
-
-									{#if RAGConfig.CONTENT_EXTRACTION_ENGINE === ''}
-										<div class="mt-3 flex items-center justify-between gap-4">
-											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('PDF Extract Images (OCR)')}</div>
-											<Switch bind:state={RAGConfig.PDF_EXTRACT_IMAGES} />
+								{:else if selectedExtractionEngine === 'external'}
+									<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">外部文档加载器 URL</div>
+											<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" bind:value={RAGConfig.EXTERNAL_DOCUMENT_LOADER_URL} placeholder="https://api.example.com/v1/document-loader" />
+											<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+												填写文档加载器服务的基地址，例如 `https://api.example.com/v1/document-loader`。不要填写 `/process`、`/v1/chat/completions` 等具体接口路径，系统会自动在该地址后追加 `/process` 进行请求。
+											</div>
 										</div>
-										<div class="mt-2">
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('PDF Loading Mode')}</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+											<SensitiveInput placeholder="填写外部文档加载器 API 密钥" bind:value={RAGConfig.EXTERNAL_DOCUMENT_LOADER_API_KEY} />
+										</div>
+									</div>
+								{:else if selectedExtractionEngine === 'tika'}
+									<div>
+										<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Tika 服务地址</div>
+										<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="填写 Tika 服务地址，例如 http://localhost:9998" bind:value={RAGConfig.TIKA_SERVER_URL} />
+									</div>
+								{:else if selectedExtractionEngine === 'docling'}
+									<div class="space-y-3">
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Docling 服务地址</div>
+												<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="填写 Docling 服务地址，例如 http://localhost:5001" bind:value={RAGConfig.DOCLING_SERVER_URL} />
+											</div>
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Docling API 密钥</div>
+												<SensitiveInput placeholder="填写 Docling API 密钥" bind:value={RAGConfig.DOCLING_API_KEY} />
+											</div>
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">Docling 高级参数（JSON）</div>
+											<Textarea bind:value={RAGConfig.DOCLING_PARAMS} placeholder={'{\n  "image_export_mode": "placeholder"\n}'} />
+										</div>
+									</div>
+								{:else if selectedExtractionEngine === 'datalab_marker'}
+									<div class="space-y-3">
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+												<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" bind:value={RAGConfig.DATALAB_MARKER_API_BASE_URL} placeholder="https://www.datalab.to/api/v1/marker" />
+											</div>
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+												<SensitiveInput placeholder="填写 Datalab Marker API 密钥" bind:value={RAGConfig.DATALAB_MARKER_API_KEY} />
+											</div>
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">附加配置（JSON）</div>
+											<Textarea bind:value={RAGConfig.DATALAB_MARKER_ADDITIONAL_CONFIG} placeholder={'{"disable_links": true}'} />
+										</div>
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">使用 LLM 增强</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_USE_LLM} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">跳过缓存</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_SKIP_CACHE} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">强制 OCR</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_FORCE_OCR} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">按页输出</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_PAGINATE} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">移除已有 OCR</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_STRIP_EXISTING_OCR} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+												<div class="text-sm font-medium">禁用图片提取</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION} />
+											</div>
+											<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40 md:col-span-2">
+												<div class="text-sm font-medium">保留行格式</div>
+												<Switch bind:state={RAGConfig.DATALAB_MARKER_FORMAT_LINES} />
+											</div>
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">输出格式</div>
 											<HaloSelect
-												bind:value={RAGConfig.PDF_LOADING_MODE}
+												bind:value={RAGConfig.DATALAB_MARKER_OUTPUT_FORMAT}
 												options={[
-													{ value: '', label: $i18n.t('Page (Default)') },
-													{ value: 'single', label: $i18n.t('Single Document') }
+													{ value: 'markdown', label: 'Markdown（推荐）' },
+													{ value: 'json', label: 'JSON（结构化）' },
+													{ value: 'html', label: 'HTML（网页）' }
 												]}
 												className="w-full"
 											/>
 										</div>
-									{:else if RAGConfig.CONTENT_EXTRACTION_ENGINE === 'tika'}
-										<div class="mt-3">
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Tika Server URL')}</div>
-											<input
-												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												placeholder={$i18n.t('Enter Tika Server URL')}
-												bind:value={RAGConfig.TIKA_SERVER_URL}
-											/>
-										</div>
-									{:else if RAGConfig.CONTENT_EXTRACTION_ENGINE === 'docling'}
-										<div class="mt-3">
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Docling Server URL')}</div>
-											<input
-												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												placeholder={$i18n.t('Enter Docling Server URL')}
-												bind:value={RAGConfig.DOCLING_SERVER_URL}
-											/>
-										</div>
-									{:else if RAGConfig.CONTENT_EXTRACTION_ENGINE === 'document_intelligence'}
-										<div class="mt-3 space-y-3">
+									</div>
+								{:else if selectedExtractionEngine === 'document_intelligence'}
+									<div class="space-y-3">
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 											<div>
-												<input
-													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-													placeholder="Azure Document Intelligence Endpoint"
-													bind:value={RAGConfig.DOCUMENT_INTELLIGENCE_ENDPOINT}
-												/>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">服务端点</div>
+												<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="填写 Azure Document Intelligence 服务端点" bind:value={RAGConfig.DOCUMENT_INTELLIGENCE_ENDPOINT} />
 											</div>
 											<div>
-												<SensitiveInput
-													placeholder="Azure Document Intelligence Key"
-													bind:value={RAGConfig.DOCUMENT_INTELLIGENCE_KEY}
-												/>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+												<SensitiveInput placeholder="填写 Azure Document Intelligence API 密钥" bind:value={RAGConfig.DOCUMENT_INTELLIGENCE_KEY} />
 											</div>
 										</div>
-									{:else if RAGConfig.CONTENT_EXTRACTION_ENGINE === 'mistral_ocr'}
-										<div class="mt-3">
-											<SensitiveInput
-												placeholder="Mistral API Key"
-												bind:value={RAGConfig.MISTRAL_OCR_API_KEY}
-											/>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">模型</div>
+											<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="prebuilt-layout" bind:value={RAGConfig.DOCUMENT_INTELLIGENCE_MODEL} />
 										</div>
-									{/if}
-								</div>
-							{/if}
+									</div>
+								{:else if selectedExtractionEngine === 'mistral_ocr'}
+									<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+											<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="https://api.mistral.ai/v1" bind:value={RAGConfig.MISTRAL_OCR_API_BASE_URL} />
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+											<SensitiveInput placeholder="填写 Mistral API 密钥" bind:value={RAGConfig.MISTRAL_OCR_API_KEY} />
+										</div>
+									</div>
+								{:else if selectedExtractionEngine === 'mineru'}
+									<div class="space-y-3">
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 模式</div>
+												<HaloSelect
+													bind:value={RAGConfig.MINERU_API_MODE}
+													options={[
+														{ value: 'local', label: '本地部署' },
+														{ value: 'cloud', label: '云端 API' }
+													]}
+													className="w-full"
+													on:change={() => {
+														const cloudUrl = 'https://mineru.net/api/v4';
+														const localUrl = 'http://localhost:8000';
+														if (RAGConfig.MINERU_API_MODE === 'cloud' && (!RAGConfig.MINERU_API_URL || RAGConfig.MINERU_API_URL === localUrl)) {
+															RAGConfig.MINERU_API_URL = cloudUrl;
+														}
+														if (RAGConfig.MINERU_API_MODE === 'local' && (!RAGConfig.MINERU_API_URL || RAGConfig.MINERU_API_URL === cloudUrl)) {
+															RAGConfig.MINERU_API_URL = localUrl;
+														}
+													}}
+												/>
+											</div>
+											<div class="md:col-span-2">
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 地址</div>
+												<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" bind:value={RAGConfig.MINERU_API_URL} placeholder={RAGConfig.MINERU_API_MODE === 'cloud' ? 'https://mineru.net/api/v4' : 'http://localhost:8000'} />
+											</div>
+										</div>
+										<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+												<SensitiveInput placeholder="填写 MinerU API 密钥" bind:value={RAGConfig.MINERU_API_KEY} />
+											</div>
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">请求超时（秒）</div>
+												<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" type="number" min="1" bind:value={RAGConfig.MINERU_API_TIMEOUT} placeholder="300" />
+											</div>
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">高级参数（JSON）</div>
+											<Textarea bind:value={RAGConfig.MINERU_PARAMS} placeholder={'{\n  "enable_ocr": false,\n  "enable_formula": true,\n  "enable_table": true,\n  "language": "en",\n  "model_version": "pipeline",\n  "page_ranges": ""\n}'} />
+										</div>
+									</div>
+								{:else if selectedExtractionEngine === 'open_mineru'}
+									<div>
+										<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+										<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.open_mineru.api_base_url} />
+									</div>
+								{:else if selectedExtractionEngine === 'doc2x'}
+									<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+											<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.doc2x.api_base_url} />
+										</div>
+										<div>
+											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+											<SensitiveInput placeholder="填写 Doc2x API 密钥" bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.doc2x.api_key} />
+										</div>
+									</div>
+								{:else if selectedExtractionEngine === 'paddleocr'}
+									<div>
+										<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">服务地址</div>
+										<input class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300" placeholder="http://localhost:8080/ocr" bind:value={RAGConfig.DOCUMENT_PROVIDER_CONFIGS.paddleocr.server_url} />
+									</div>
+								{/if}
+							</div>
+						</div>
 
 						<div class="glass-item p-5">
 							<div class="mb-3 flex items-center justify-between gap-4">
-								<div class="text-sm font-medium">{$i18n.t('Text Splitter')}</div>
+								<div class="text-sm font-medium">文本切分器</div>
 								<HaloSelect
 									bind:value={RAGConfig.TEXT_SPLITTER}
 									options={[
 										{
 											value: '',
-											label: `${$i18n.t('Default')} (${$i18n.t('Character')})`
+											label: '默认（按字符）'
 										},
 										{
 											value: 'token',
-											label: `${$i18n.t('Token')} (${$i18n.t('Tiktoken')})`
-										},
-										{ value: 'markdown', label: $i18n.t('Markdown Header') }
+											label: '按 Token（Tiktoken）'
+										}
 									]}
 									className="w-fit"
 								/>
 							</div>
 
+							<div class="mb-3 flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+								<div>
+									<div class="text-sm font-medium">Markdown 标题分割器</div>
+									<div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+										先按 Markdown 标题切分，再进入字符或 Token 切分。
+									</div>
+								</div>
+								<Switch bind:state={RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER} />
+							</div>
+
 							<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 								<div>
-									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Chunk Size')}</div>
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">分块大小</div>
 									<input
 										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 										type="number"
-										placeholder={$i18n.t('Enter Chunk Size')}
+										placeholder="填写分块大小"
 										bind:value={RAGConfig.CHUNK_SIZE}
 										autocomplete="off"
 										min="0"
 									/>
 								</div>
 								<div>
-									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Chunk Overlap')}</div>
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">分块重叠</div>
 									<input
 										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 										type="number"
-										placeholder={$i18n.t('Enter Chunk Overlap')}
+										placeholder="填写分块重叠"
 										bind:value={RAGConfig.CHUNK_OVERLAP}
 										autocomplete="off"
 										min="0"
 									/>
 								</div>
+								{#if RAGConfig.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER}
+									<div>
+										<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">最小块合并阈值</div>
+										<input
+											class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+											type="number"
+											placeholder="0 表示关闭"
+											bind:value={RAGConfig.CHUNK_MIN_SIZE_TARGET}
+											autocomplete="off"
+											min="0"
+										/>
+									</div>
+								{/if}
 								<div>
-									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Min Chunk Size')}</div>
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">最小分块大小</div>
 									<input
 										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 										type="number"
@@ -1186,8 +1563,18 @@
 						</div>
 
 						<div class="glass-item p-5">
-							<div class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{$i18n.t('File Limits')}</div>
+							<div class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">文件限制</div>
 							<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+								<div class="md:col-span-2">
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">允许的文件扩展名</div>
+									<input
+										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+										type="text"
+										placeholder="例如：pdf, docx, txt；留空表示允许全部"
+										bind:value={RAGConfig.ALLOWED_FILE_EXTENSIONS}
+										autocomplete="off"
+									/>
+								</div>
 								<div>
 									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Max Upload Size')}</div>
 									<Tooltip
@@ -1225,11 +1612,33 @@
 										/>
 									</Tooltip>
 								</div>
+								<div>
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">图片压缩宽度</div>
+									<input
+										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+										type="number"
+										placeholder="留空表示不限制"
+										bind:value={RAGConfig.FILE_IMAGE_COMPRESSION_WIDTH}
+										autocomplete="off"
+										min="0"
+									/>
+								</div>
+								<div>
+									<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">图片压缩高度</div>
+									<input
+										class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+										type="number"
+										placeholder="留空表示不限制"
+										bind:value={RAGConfig.FILE_IMAGE_COMPRESSION_HEIGHT}
+										autocomplete="off"
+										min="0"
+									/>
+								</div>
 							</div>
 						</div>
 
 						<div class="glass-item p-5">
-							<div class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{$i18n.t('Cloud Storage')}</div>
+							<div class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">云存储</div>
 							<div class="space-y-3">
 								<div class="flex items-center justify-between gap-4">
 									<div class="text-sm font-medium">{$i18n.t('Google Drive')}</div>
@@ -1250,32 +1659,40 @@
 						: 'glass-section'}"
 				>
 					<div class="space-y-3">
+						{#if RAGConfig.FILE_PROCESSING_DEFAULT_MODE !== 'retrieval'}
+							<div class="glass-item border border-amber-200/70 bg-amber-50/80 p-4 text-xs leading-6 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+								当前默认文件处理模式不是“检索模式”。这里的嵌入设置仍会影响手动按检索模式处理的文件，以及后续重建索引时的行为，但不会作用于默认按“完整上下文”或“原生文件”保存的上传。
+							</div>
+						{/if}
 						<div class="glass-item p-5">
 							<div class="flex items-center justify-between gap-4">
-								<div class="text-sm font-medium">{$i18n.t('Embedding Model Engine')}</div>
+								<div class="text-sm font-medium">嵌入引擎</div>
 								<HaloSelect
 									bind:value={embeddingEngine}
-									placeholder={$i18n.t('Select an embedding model engine')}
-									options={[
-										{
-											value: '',
-											label: $i18n.t('Default (SentenceTransformers)'),
-											disabled: !runtimeCapabilities.local_embedding_available
-										},
-										{ value: 'ollama', label: $i18n.t('Ollama') },
-										{ value: 'openai', label: $i18n.t('OpenAI') }
-									]}
-									className="w-fit"
-									on:change={(e) => {
-										if (e.detail.value === 'ollama') {
-											embeddingModel = '';
-										} else if (e.detail.value === 'openai') {
-											embeddingModel = 'text-embedding-3-small';
-										} else if (e.detail.value === '') {
-											embeddingModel = 'sentence-transformers/all-MiniLM-L6-v2';
-										}
-									}}
-								/>
+									placeholder="选择嵌入引擎"
+										options={[
+											{
+												value: '',
+												label: '默认（SentenceTransformers）',
+												disabled: !runtimeCapabilities.local_embedding_available
+											},
+											{ value: 'ollama', label: $i18n.t('Ollama') },
+											{ value: 'openai', label: $i18n.t('OpenAI') },
+											{ value: 'azure_openai', label: 'Azure OpenAI' }
+										]}
+										className="w-fit"
+										on:change={(e) => {
+											if (e.detail.value === 'ollama') {
+												embeddingModel = '';
+											} else if (e.detail.value === 'openai') {
+												embeddingModel = 'text-embedding-3-small';
+											} else if (e.detail.value === 'azure_openai') {
+												embeddingModel = 'text-embedding-3-small';
+											} else if (e.detail.value === '') {
+												embeddingModel = 'sentence-transformers/all-MiniLM-L6-v2';
+											}
+										}}
+									/>
 							</div>
 
 							{#if localEmbeddingUnavailable}
@@ -1285,59 +1702,94 @@
 							{/if}
 
 							{#if embeddingEngine === 'openai'}
-								<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
-									<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('API Base URL')}</div>
-										<div class="w-full sm:w-1/2">
-											<input
-												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												placeholder={$i18n.t('API Base URL')}
-												bind:value={OpenAIUrl}
-												required
-											/>
+									<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+											<div class="w-full sm:w-1/2">
+												<input
+													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+													placeholder="填写 OpenAI 兼容 API 基础 URL"
+													bind:value={OpenAIUrl}
+													required
+												/>
+											</div>
 										</div>
-									</div>
-									<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('API Key')}</div>
-										<div class="w-full sm:w-1/2">
-											<SensitiveInput
-												inputClassName="w-full text-sm"
-												placeholder={$i18n.t('API Key')}
-												bind:value={OpenAIKey}
-											/>
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+											<div class="w-full sm:w-1/2">
+												<SensitiveInput
+													inputClassName="w-full text-sm"
+													placeholder="填写 OpenAI API 密钥"
+													bind:value={OpenAIKey}
+												/>
+											</div>
 										</div>
-									</div>
 								</div>
-							{:else if embeddingEngine === 'ollama'}
-								<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
+								{:else if embeddingEngine === 'ollama'}
+									<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
 									<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('API Base URL')}</div>
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
 										<div class="w-full sm:w-1/2">
 											<input
 												class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
-												placeholder={$i18n.t('API Base URL')}
+												placeholder="填写 Ollama 服务地址"
 												bind:value={OllamaUrl}
 												required
 											/>
 										</div>
 									</div>
 									<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('API Key')}</div>
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
 										<div class="w-full sm:w-1/2">
 											<SensitiveInput
 												inputClassName="w-full text-sm"
-												placeholder={$i18n.t('API Key')}
+												placeholder="如有鉴权请填写 API 密钥"
 												bind:value={OllamaKey}
 												required={false}
 											/>
 										</div>
+										</div>
 									</div>
-								</div>
-							{/if}
+								{:else if embeddingEngine === 'azure_openai'}
+									<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 基础 URL</div>
+											<div class="w-full sm:w-1/2">
+												<input
+													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+													placeholder="https://YOUR-RESOURCE.openai.azure.com"
+													bind:value={AzureOpenAIUrl}
+													required
+												/>
+											</div>
+										</div>
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 密钥</div>
+											<div class="w-full sm:w-1/2">
+												<SensitiveInput
+													inputClassName="w-full text-sm"
+													placeholder="填写 Azure OpenAI API 密钥"
+													bind:value={AzureOpenAIKey}
+												/>
+											</div>
+										</div>
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">API 版本</div>
+											<div class="w-full sm:w-1/2">
+												<input
+													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+													placeholder="2024-02-01"
+													bind:value={AzureOpenAIVersion}
+													required
+												/>
+											</div>
+										</div>
+									</div>
+								{/if}
 						</div>
 
 						<div class="glass-item p-5">
-							<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Embedding Model')}</div>
+							<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">嵌入模型</div>
 							{#if embeddingEngine === 'ollama'}
 								<input
 									class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
@@ -1383,19 +1835,45 @@
 								)}
 							</div>
 
-							{#if embeddingEngine === 'ollama' || embeddingEngine === 'openai'}
-								<div class="mt-3 flex flex-col gap-2 border-t border-gray-100/60 pt-3 dark:border-gray-800/40 sm:flex-row sm:items-center sm:justify-between">
-									<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Embedding Batch Size')}</div>
-									<input
-										bind:value={embeddingBatchSize}
-										type="number"
-										class="glass-input w-24 px-3 py-2 text-right text-sm dark:text-gray-300"
-										min="-2"
-										max="16000"
-										step="1"
-									/>
-								</div>
-							{/if}
+								{#if embeddingEngine === 'ollama' || embeddingEngine === 'openai' || embeddingEngine === 'azure_openai'}
+									<div class="mt-3 space-y-3 border-t border-gray-100/60 pt-3 dark:border-gray-800/40">
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div class="text-xs font-medium text-gray-500 dark:text-gray-400">嵌入批大小</div>
+											<input
+												bind:value={embeddingBatchSize}
+												type="number"
+												class="glass-input w-24 px-3 py-2 text-right text-sm dark:text-gray-300"
+												min="-2"
+												max="16000"
+												step="1"
+											/>
+										</div>
+										<div class="flex items-center justify-between gap-4">
+											<div>
+												<div class="text-xs font-medium text-gray-500 dark:text-gray-400">异步嵌入处理</div>
+												<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+													并发执行嵌入批处理以加速文档处理，如遇速率限制可关闭。
+												</div>
+											</div>
+											<Switch bind:state={enableAsyncEmbedding} />
+										</div>
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+											<div>
+												<div class="text-xs font-medium text-gray-500 dark:text-gray-400">嵌入并发请求数</div>
+												<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+													限制并发嵌入请求数，`0` 表示不限制。
+												</div>
+											</div>
+											<input
+												bind:value={embeddingConcurrentRequests}
+												type="number"
+												class="glass-input w-24 px-3 py-2 text-right text-sm dark:text-gray-300"
+												min="0"
+												step="1"
+											/>
+										</div>
+									</div>
+								{/if}
 						</div>
 					</div>
 				</section>
@@ -1406,9 +1884,14 @@
 						: 'glass-section'}"
 				>
 					<div class="space-y-3">
+						{#if RAGConfig.FILE_PROCESSING_DEFAULT_MODE !== 'retrieval'}
+							<div class="glass-item border border-sky-200/70 bg-sky-50/80 p-4 text-xs leading-6 text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-300">
+								当前默认文件处理模式不是“检索模式”。这里的召回、混合搜索和重排设置主要影响已建立索引的知识库内容，以及后续改为检索模式处理的文件。
+							</div>
+						{/if}
 						<div class="glass-item p-5">
 							<div class="flex items-center justify-between gap-4">
-								<div class="text-sm font-medium">{$i18n.t('Full Context Mode')}</div>
+								<div class="text-sm font-medium">全文模式</div>
 								<Tooltip
 									content={RAGConfig.RAG_FULL_CONTEXT
 										? $i18n.t(
@@ -1427,24 +1910,33 @@
 							<div class="glass-item p-5">
 								<div class="space-y-4">
 									<div class="flex items-center justify-between gap-4">
-										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Hybrid Search')}</div>
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400">混合搜索</div>
 										<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH} />
 									</div>
 
-									{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
-										<div class="space-y-4 border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
-											<div>
-												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-													{$i18n.t('Reranking Engine')}
+										{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+											<div class="space-y-4 border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
+												<div class="flex items-center justify-between gap-4 rounded-2xl border border-gray-200/70 bg-white/60 px-4 py-3 dark:border-gray-700/70 dark:bg-gray-900/40">
+													<div>
+														<div class="text-sm font-medium">BM25 富化文本</div>
+														<div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+															把文件名、标题、标题层级和摘要拼入 BM25 文本，提升词法召回率。
+														</div>
+													</div>
+													<Switch bind:state={RAGConfig.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS} />
 												</div>
+												<div>
+													<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
+														重排序引擎
+													</div>
 												<select
 													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 													bind:value={rerankingEngine}
 													on:change={handleRerankingEngineChange}
 												>
-													<option value="local">{$i18n.t('Local')}</option>
+													<option value="local">本地模型</option>
 													<option value="jina">Jina</option>
-													<option value="external">{$i18n.t('External')}</option>
+													<option value="external">外部 API</option>
 												</select>
 											</div>
 
@@ -1452,7 +1944,7 @@
 												<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 													<div>
 														<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-															{$i18n.t('API Base URL')}
+															API 基础 URL
 														</div>
 														<input
 															class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
@@ -1462,10 +1954,10 @@
 													</div>
 													<div>
 														<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-															{$i18n.t('API Key')}
+															API 密钥
 														</div>
 														<SensitiveInput
-															placeholder={$i18n.t('API Key')}
+															placeholder="填写重排序服务 API 密钥"
 															required={false}
 															bind:value={rerankingApiKey}
 														/>
@@ -1475,7 +1967,7 @@
 
 											<div>
 												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-													{$i18n.t('Reranking Model')}
+													重排序模型
 												</div>
 												<div class="flex w-full gap-2">
 													<input
@@ -1528,12 +2020,12 @@
 											{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
 												<div>
 													<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-														{$i18n.t('Top K Reranker')}
+														重排序候选数
 													</div>
 													<input
 														class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
 														type="number"
-														placeholder={$i18n.t('Enter Top K Reranker')}
+														placeholder="填写重排序候选数"
 														bind:value={RAGConfig.TOP_K_RERANKER}
 														autocomplete="off"
 														min="0"
@@ -1543,33 +2035,61 @@
 										</div>
 									</div>
 
-									{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
-										<div class="space-y-4 border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
-											<div>
-												<div class="mb-1.5 flex items-center justify-between">
-													<div class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('BM25 Weight')}</div>
-													<div class="text-xs text-gray-400">
-														{RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT ?? 0.5}
+										{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
+											<div class="space-y-4 border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
+												<div>
+													<div class="mb-1.5 flex items-center justify-between">
+														<div class="text-xs font-medium text-gray-500 dark:text-gray-400">BM25 权重</div>
+														<button
+															class="rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-600 transition hover:border-gray-300 hover:text-gray-900 dark:border-gray-700 dark:text-gray-300 dark:hover:border-gray-600 dark:hover:text-white"
+															type="button"
+															on:click={() => {
+																isBm25WeightCustom = !isBm25WeightCustom;
+																if (!isBm25WeightCustom) {
+																	RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT = 0.5;
+																} else if (RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT === null || RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT === undefined) {
+																	RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT = 0.5;
+																}
+															}}
+														>
+															{isBm25WeightCustom ? '自定义' : '默认'}
+														</button>
 													</div>
-												</div>
-												<input
-													class="w-full"
-													type="range"
-													step="0.05"
-													min="0"
-													max="1"
-													bind:value={RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT}
-												/>
-												<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-													{$i18n.t(
-														'Balance between keyword (BM25) and semantic (vector) search. 0 = pure vector, 1 = pure keyword.'
+													{#if isBm25WeightCustom}
+														<div class="space-y-2">
+															<div class="flex items-center justify-between text-xs text-gray-400">
+																<span>语义</span>
+																<span>{RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT ?? 0.5}</span>
+																<span>词法</span>
+															</div>
+															<input
+																class="w-full"
+																type="range"
+																step="0.05"
+																min="0"
+																max="1"
+																bind:value={RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT}
+															/>
+															<input
+																class="glass-input w-28 px-3 py-2 text-right text-sm dark:text-gray-300"
+																type="number"
+																step="0.01"
+																min="0"
+																max="1"
+																bind:value={RAGConfig.RAG_HYBRID_SEARCH_BM25_WEIGHT}
+															/>
+														</div>
+													{/if}
+													<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+														{$i18n.t(
+															'Balance between keyword (BM25) and semantic (vector) search. 0 = pure vector, 1 = pure keyword.'
 													)}
 												</div>
 											</div>
 
 											<div>
 												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-													{$i18n.t('Relevance Threshold')}
+													相关性阈值
 												</div>
 												<input
 													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"

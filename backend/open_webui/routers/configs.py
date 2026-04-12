@@ -256,7 +256,7 @@ async def set_native_tools_config(
     if mode_raw not in TOOL_CALLING_MODE_ALLOWED:
         raise HTTPException(
             status_code=400,
-            detail="Invalid TOOL_CALLING_MODE. Must be 'default' or 'native'.",
+            detail="Invalid TOOL_CALLING_MODE. Must be 'default', 'native', or 'off'.",
         )
     mode = normalize_tool_calling_mode(mode_raw, default=TOOL_CALLING_MODE_DEFAULT)
 

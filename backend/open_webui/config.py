@@ -2356,6 +2356,120 @@ CONTENT_EXTRACTION_ENGINE = PersistentConfig(
     preset_env("CONTENT_EXTRACTION_ENGINE", "").lower(),
 )
 
+DATALAB_MARKER_API_KEY = PersistentConfig(
+    "DATALAB_MARKER_API_KEY",
+    "rag.datalab_marker_api_key",
+    os.environ.get("DATALAB_MARKER_API_KEY", ""),
+)
+
+DATALAB_MARKER_API_BASE_URL = PersistentConfig(
+    "DATALAB_MARKER_API_BASE_URL",
+    "rag.datalab_marker_api_base_url",
+    os.environ.get("DATALAB_MARKER_API_BASE_URL", ""),
+)
+
+DATALAB_MARKER_ADDITIONAL_CONFIG = PersistentConfig(
+    "DATALAB_MARKER_ADDITIONAL_CONFIG",
+    "rag.datalab_marker_additional_config",
+    os.environ.get("DATALAB_MARKER_ADDITIONAL_CONFIG", ""),
+)
+
+DATALAB_MARKER_USE_LLM = PersistentConfig(
+    "DATALAB_MARKER_USE_LLM",
+    "rag.DATALAB_MARKER_USE_LLM",
+    os.environ.get("DATALAB_MARKER_USE_LLM", "false").lower() == "true",
+)
+
+DATALAB_MARKER_SKIP_CACHE = PersistentConfig(
+    "DATALAB_MARKER_SKIP_CACHE",
+    "rag.datalab_marker_skip_cache",
+    os.environ.get("DATALAB_MARKER_SKIP_CACHE", "false").lower() == "true",
+)
+
+DATALAB_MARKER_FORCE_OCR = PersistentConfig(
+    "DATALAB_MARKER_FORCE_OCR",
+    "rag.datalab_marker_force_ocr",
+    os.environ.get("DATALAB_MARKER_FORCE_OCR", "false").lower() == "true",
+)
+
+DATALAB_MARKER_PAGINATE = PersistentConfig(
+    "DATALAB_MARKER_PAGINATE",
+    "rag.datalab_marker_paginate",
+    os.environ.get("DATALAB_MARKER_PAGINATE", "false").lower() == "true",
+)
+
+DATALAB_MARKER_STRIP_EXISTING_OCR = PersistentConfig(
+    "DATALAB_MARKER_STRIP_EXISTING_OCR",
+    "rag.datalab_marker_strip_existing_ocr",
+    os.environ.get("DATALAB_MARKER_STRIP_EXISTING_OCR", "false").lower() == "true",
+)
+
+DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION = PersistentConfig(
+    "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION",
+    "rag.datalab_marker_disable_image_extraction",
+    os.environ.get("DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION", "false").lower() == "true",
+)
+
+DATALAB_MARKER_FORMAT_LINES = PersistentConfig(
+    "DATALAB_MARKER_FORMAT_LINES",
+    "rag.datalab_marker_format_lines",
+    os.environ.get("DATALAB_MARKER_FORMAT_LINES", "false").lower() == "true",
+)
+
+DATALAB_MARKER_OUTPUT_FORMAT = PersistentConfig(
+    "DATALAB_MARKER_OUTPUT_FORMAT",
+    "rag.datalab_marker_output_format",
+    os.environ.get("DATALAB_MARKER_OUTPUT_FORMAT", "markdown"),
+)
+
+MINERU_API_MODE = PersistentConfig(
+    "MINERU_API_MODE",
+    "rag.mineru_api_mode",
+    os.environ.get("MINERU_API_MODE", "local"),
+)
+
+MINERU_API_URL = PersistentConfig(
+    "MINERU_API_URL",
+    "rag.mineru_api_url",
+    os.environ.get("MINERU_API_URL", "http://localhost:8000"),
+)
+
+MINERU_API_TIMEOUT = PersistentConfig(
+    "MINERU_API_TIMEOUT",
+    "rag.mineru_api_timeout",
+    os.environ.get("MINERU_API_TIMEOUT", "300"),
+)
+
+MINERU_API_KEY = PersistentConfig(
+    "MINERU_API_KEY",
+    "rag.mineru_api_key",
+    os.environ.get("MINERU_API_KEY", ""),
+)
+
+mineru_params = os.getenv("MINERU_PARAMS", "")
+try:
+    mineru_params = json.loads(mineru_params)
+except json.JSONDecodeError:
+    mineru_params = {}
+
+MINERU_PARAMS = PersistentConfig(
+    "MINERU_PARAMS",
+    "rag.mineru_params",
+    mineru_params,
+)
+
+EXTERNAL_DOCUMENT_LOADER_URL = PersistentConfig(
+    "EXTERNAL_DOCUMENT_LOADER_URL",
+    "rag.external_document_loader_url",
+    os.environ.get("EXTERNAL_DOCUMENT_LOADER_URL", ""),
+)
+
+EXTERNAL_DOCUMENT_LOADER_API_KEY = PersistentConfig(
+    "EXTERNAL_DOCUMENT_LOADER_API_KEY",
+    "rag.external_document_loader_api_key",
+    os.environ.get("EXTERNAL_DOCUMENT_LOADER_API_KEY", ""),
+)
+
 TIKA_SERVER_URL = PersistentConfig(
     "TIKA_SERVER_URL",
     "rag.tika_server_url",
@@ -2368,6 +2482,24 @@ DOCLING_SERVER_URL = PersistentConfig(
     os.getenv("DOCLING_SERVER_URL", "http://docling:5001"),
 )
 
+DOCLING_API_KEY = PersistentConfig(
+    "DOCLING_API_KEY",
+    "rag.docling_api_key",
+    os.getenv("DOCLING_API_KEY", ""),
+)
+
+docling_params = os.getenv("DOCLING_PARAMS", "")
+try:
+    docling_params = json.loads(docling_params)
+except json.JSONDecodeError:
+    docling_params = {}
+
+DOCLING_PARAMS = PersistentConfig(
+    "DOCLING_PARAMS",
+    "rag.docling_params",
+    docling_params,
+)
+
 DOCUMENT_INTELLIGENCE_ENDPOINT = PersistentConfig(
     "DOCUMENT_INTELLIGENCE_ENDPOINT",
     "rag.document_intelligence_endpoint",
@@ -2378,6 +2510,18 @@ DOCUMENT_INTELLIGENCE_KEY = PersistentConfig(
     "DOCUMENT_INTELLIGENCE_KEY",
     "rag.document_intelligence_key",
     os.getenv("DOCUMENT_INTELLIGENCE_KEY", ""),
+)
+
+DOCUMENT_INTELLIGENCE_MODEL = PersistentConfig(
+    "DOCUMENT_INTELLIGENCE_MODEL",
+    "rag.document_intelligence_model",
+    os.getenv("DOCUMENT_INTELLIGENCE_MODEL", "prebuilt-layout"),
+)
+
+MISTRAL_OCR_API_BASE_URL = PersistentConfig(
+    "MISTRAL_OCR_API_BASE_URL",
+    "rag.MISTRAL_OCR_API_BASE_URL",
+    os.getenv("MISTRAL_OCR_API_BASE_URL", "https://api.mistral.ai/v1"),
 )
 
 MISTRAL_OCR_API_KEY = PersistentConfig(
@@ -2413,6 +2557,12 @@ ENABLE_RAG_HYBRID_SEARCH = PersistentConfig(
     os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "").lower() == "true",
 )
 
+ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = PersistentConfig(
+    "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
+    "rag.enable_hybrid_search_enriched_texts",
+    os.environ.get("ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS", "False").lower() == "true",
+)
+
 RAG_HYBRID_SEARCH_BM25_WEIGHT = PersistentConfig(
     "RAG_HYBRID_SEARCH_BM25_WEIGHT",
     "rag.hybrid_search_bm25_weight",
@@ -2443,6 +2593,32 @@ RAG_FILE_MAX_SIZE = PersistentConfig(
         if os.environ.get("RAG_FILE_MAX_SIZE")
         else None
     ),
+)
+
+FILE_IMAGE_COMPRESSION_WIDTH = PersistentConfig(
+    "FILE_IMAGE_COMPRESSION_WIDTH",
+    "file.image_compression_width",
+    (
+        int(os.environ.get("FILE_IMAGE_COMPRESSION_WIDTH"))
+        if os.environ.get("FILE_IMAGE_COMPRESSION_WIDTH")
+        else None
+    ),
+)
+
+FILE_IMAGE_COMPRESSION_HEIGHT = PersistentConfig(
+    "FILE_IMAGE_COMPRESSION_HEIGHT",
+    "file.image_compression_height",
+    (
+        int(os.environ.get("FILE_IMAGE_COMPRESSION_HEIGHT"))
+        if os.environ.get("FILE_IMAGE_COMPRESSION_HEIGHT")
+        else None
+    ),
+)
+
+RAG_ALLOWED_FILE_EXTENSIONS = PersistentConfig(
+    "RAG_ALLOWED_FILE_EXTENSIONS",
+    "rag.file.allowed_extensions",
+    [ext.strip() for ext in os.environ.get("RAG_ALLOWED_FILE_EXTENSIONS", "").split(",") if ext.strip()],
 )
 
 RAG_EMBEDDING_ENGINE = PersistentConfig(
@@ -2489,6 +2665,12 @@ RAG_EMBEDDING_BATCH_SIZE = PersistentConfig(
         os.environ.get("RAG_EMBEDDING_BATCH_SIZE")
         or os.environ.get("RAG_EMBEDDING_OPENAI_BATCH_SIZE", "1")
     ),
+)
+
+ENABLE_ASYNC_EMBEDDING = PersistentConfig(
+    "ENABLE_ASYNC_EMBEDDING",
+    "rag.enable_async_embedding",
+    os.environ.get("ENABLE_ASYNC_EMBEDDING", "True").lower() == "true",
 )
 
 RAG_EMBEDDING_QUERY_PREFIX = os.environ.get("RAG_EMBEDDING_QUERY_PREFIX", None)
@@ -2553,6 +2735,12 @@ RAG_TEXT_SPLITTER = PersistentConfig(
     os.environ.get("RAG_TEXT_SPLITTER", ""),
 )
 
+ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = PersistentConfig(
+    "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER",
+    "rag.enable_markdown_header_text_splitter",
+    os.environ.get("ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER", "True").lower() == "true",
+)
+
 
 TIKTOKEN_CACHE_DIR = os.environ.get("TIKTOKEN_CACHE_DIR", f"{CACHE_DIR}/tiktoken")
 TIKTOKEN_ENCODING_NAME = PersistentConfig(
@@ -2565,6 +2753,13 @@ TIKTOKEN_ENCODING_NAME = PersistentConfig(
 CHUNK_SIZE = PersistentConfig(
     "CHUNK_SIZE", "rag.chunk_size", int(os.environ.get("CHUNK_SIZE", "1000"))
 )
+
+CHUNK_MIN_SIZE_TARGET = PersistentConfig(
+    "CHUNK_MIN_SIZE_TARGET",
+    "rag.chunk_min_size_target",
+    int(os.environ.get("CHUNK_MIN_SIZE_TARGET", "0")),
+)
+
 CHUNK_OVERLAP = PersistentConfig(
     "CHUNK_OVERLAP",
     "rag.chunk_overlap",
@@ -2628,6 +2823,24 @@ RAG_OPENAI_API_KEY = PersistentConfig(
     "RAG_OPENAI_API_KEY",
     "rag.openai_api_key",
     os.getenv("RAG_OPENAI_API_KEY", OPENAI_API_KEY),
+)
+
+RAG_AZURE_OPENAI_BASE_URL = PersistentConfig(
+    "RAG_AZURE_OPENAI_BASE_URL",
+    "rag.azure_openai.base_url",
+    os.getenv("RAG_AZURE_OPENAI_BASE_URL", ""),
+)
+
+RAG_AZURE_OPENAI_API_KEY = PersistentConfig(
+    "RAG_AZURE_OPENAI_API_KEY",
+    "rag.azure_openai.api_key",
+    os.getenv("RAG_AZURE_OPENAI_API_KEY", ""),
+)
+
+RAG_AZURE_OPENAI_API_VERSION = PersistentConfig(
+    "RAG_AZURE_OPENAI_API_VERSION",
+    "rag.azure_openai.api_version",
+    os.getenv("RAG_AZURE_OPENAI_API_VERSION", ""),
 )
 
 RAG_OLLAMA_BASE_URL = PersistentConfig(

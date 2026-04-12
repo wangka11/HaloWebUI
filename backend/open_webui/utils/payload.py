@@ -3,7 +3,7 @@ from open_webui.utils.misc import (
     add_or_update_system_message,
 )
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 import json
 
 
@@ -59,6 +59,34 @@ def apply_model_params_to_body(
             form_data[key] = cast_func(value)
 
     return form_data
+
+
+def merge_additive_payload_fields(
+    payload: dict, extra_fields: Any, forbidden_keys: Optional[set[str]] = None
+) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+
+    if not isinstance(extra_fields, dict):
+        return payload
+
+    merged = dict(payload)
+
+    for key, value in extra_fields.items():
+        if not isinstance(key, str):
+            continue
+
+        if forbidden_keys and key in forbidden_keys:
+            continue
+
+        if key not in merged:
+            merged[key] = value
+            continue
+
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = merge_additive_payload_fields(merged[key], value)
+
+    return merged
 
 
 # inplace function: form_data is modified

@@ -27,7 +27,11 @@ from pydantic import BaseModel
 import tiktoken
 
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
+from langchain.text_splitter import (
+    MarkdownHeaderTextSplitter,
+    RecursiveCharacterTextSplitter,
+    TokenTextSplitter,
+)
 from langchain_core.documents import Document
 
 from open_webui.models.files import FileModel, Files
@@ -202,9 +206,18 @@ async def get_embedding_config(request: Request, user=Depends(get_admin_user)):
         "embedding_engine": request.app.state.config.RAG_EMBEDDING_ENGINE,
         "embedding_model": request.app.state.config.RAG_EMBEDDING_MODEL,
         "embedding_batch_size": request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+        "enable_async_embedding": getattr(
+            request.app.state.config, "ENABLE_ASYNC_EMBEDDING", True
+        ),
+        "embedding_concurrent_requests": request.app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
         "openai_config": {
             "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
             "key": request.app.state.config.RAG_OPENAI_API_KEY,
+        },
+        "azure_openai_config": {
+            "url": getattr(request.app.state.config, "RAG_AZURE_OPENAI_BASE_URL", ""),
+            "key": getattr(request.app.state.config, "RAG_AZURE_OPENAI_API_KEY", ""),
+            "version": getattr(request.app.state.config, "RAG_AZURE_OPENAI_API_VERSION", ""),
         },
         "ollama_config": {
             "url": request.app.state.config.RAG_OLLAMA_BASE_URL,
@@ -232,6 +245,12 @@ class OpenAIConfigForm(BaseModel):
     key: str
 
 
+class AzureOpenAIConfigForm(BaseModel):
+    url: str
+    key: str
+    version: str
+
+
 class OllamaConfigForm(BaseModel):
     url: str
     key: str
@@ -245,10 +264,13 @@ class RerankingAPIConfigForm(BaseModel):
 
 class EmbeddingModelUpdateForm(BaseModel):
     openai_config: Optional[OpenAIConfigForm] = None
+    azure_openai_config: Optional[AzureOpenAIConfigForm] = None
     ollama_config: Optional[OllamaConfigForm] = None
     embedding_engine: str
     embedding_model: str
     embedding_batch_size: Optional[int] = 1
+    enable_async_embedding: Optional[bool] = None
+    embedding_concurrent_requests: Optional[int] = None
 
 
 @router.post("/embedding/update")
@@ -262,7 +284,7 @@ async def update_embedding_config(
         request.app.state.config.RAG_EMBEDDING_ENGINE = form_data.embedding_engine
         request.app.state.config.RAG_EMBEDDING_MODEL = form_data.embedding_model
 
-        if request.app.state.config.RAG_EMBEDDING_ENGINE in ["ollama", "openai"]:
+        if request.app.state.config.RAG_EMBEDDING_ENGINE in ["ollama", "openai", "azure_openai"]:
             if form_data.openai_config is not None:
                 request.app.state.config.RAG_OPENAI_API_BASE_URL = (
                     form_data.openai_config.url
@@ -279,9 +301,28 @@ async def update_embedding_config(
                     form_data.ollama_config.key
                 )
 
+            if form_data.azure_openai_config is not None:
+                request.app.state.config.RAG_AZURE_OPENAI_BASE_URL = (
+                    form_data.azure_openai_config.url
+                )
+                request.app.state.config.RAG_AZURE_OPENAI_API_KEY = (
+                    form_data.azure_openai_config.key
+                )
+                request.app.state.config.RAG_AZURE_OPENAI_API_VERSION = (
+                    form_data.azure_openai_config.version
+                )
+
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE = (
                 form_data.embedding_batch_size
             )
+            if form_data.enable_async_embedding is not None:
+                request.app.state.config.ENABLE_ASYNC_EMBEDDING = (
+                    form_data.enable_async_embedding
+                )
+            if form_data.embedding_concurrent_requests is not None:
+                request.app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS = (
+                    form_data.embedding_concurrent_requests
+                )
 
         reset_embedding_runtime(request.app)
 
@@ -290,9 +331,18 @@ async def update_embedding_config(
             "embedding_engine": request.app.state.config.RAG_EMBEDDING_ENGINE,
             "embedding_model": request.app.state.config.RAG_EMBEDDING_MODEL,
             "embedding_batch_size": request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            "enable_async_embedding": getattr(
+                request.app.state.config, "ENABLE_ASYNC_EMBEDDING", True
+            ),
+            "embedding_concurrent_requests": request.app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
             "openai_config": {
                 "url": request.app.state.config.RAG_OPENAI_API_BASE_URL,
                 "key": request.app.state.config.RAG_OPENAI_API_KEY,
+            },
+            "azure_openai_config": {
+                "url": getattr(request.app.state.config, "RAG_AZURE_OPENAI_BASE_URL", ""),
+                "key": getattr(request.app.state.config, "RAG_AZURE_OPENAI_API_KEY", ""),
+                "version": getattr(request.app.state.config, "RAG_AZURE_OPENAI_API_VERSION", ""),
             },
             "ollama_config": {
                 "url": request.app.state.config.RAG_OLLAMA_BASE_URL,
@@ -372,27 +422,101 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         # Hybrid search settings
         "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
         "RAG_HYBRID_SEARCH_BM25_WEIGHT": request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+        "HYBRID_BM25_WEIGHT": getattr(
+            request.app.state.config,
+            "HYBRID_BM25_WEIGHT",
+            request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+        ),
+        "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS": getattr(
+            request.app.state.config, "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS", False
+        ),
         "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
         "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
         # Content extraction settings
         "DOCUMENT_PROVIDER": request.app.state.config.DOCUMENT_PROVIDER,
         "DOCUMENT_PROVIDER_CONFIGS": request.app.state.config.DOCUMENT_PROVIDER_CONFIGS,
         "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
+        "DATALAB_MARKER_API_KEY": getattr(request.app.state.config, "DATALAB_MARKER_API_KEY", ""),
+        "DATALAB_MARKER_API_BASE_URL": getattr(
+            request.app.state.config, "DATALAB_MARKER_API_BASE_URL", ""
+        ),
+        "DATALAB_MARKER_ADDITIONAL_CONFIG": getattr(
+            request.app.state.config, "DATALAB_MARKER_ADDITIONAL_CONFIG", ""
+        ),
+        "DATALAB_MARKER_SKIP_CACHE": getattr(
+            request.app.state.config, "DATALAB_MARKER_SKIP_CACHE", False
+        ),
+        "DATALAB_MARKER_FORCE_OCR": getattr(
+            request.app.state.config, "DATALAB_MARKER_FORCE_OCR", False
+        ),
+        "DATALAB_MARKER_PAGINATE": getattr(
+            request.app.state.config, "DATALAB_MARKER_PAGINATE", False
+        ),
+        "DATALAB_MARKER_STRIP_EXISTING_OCR": getattr(
+            request.app.state.config, "DATALAB_MARKER_STRIP_EXISTING_OCR", False
+        ),
+        "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION": getattr(
+            request.app.state.config, "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION", False
+        ),
+        "DATALAB_MARKER_FORMAT_LINES": getattr(
+            request.app.state.config, "DATALAB_MARKER_FORMAT_LINES", False
+        ),
+        "DATALAB_MARKER_USE_LLM": getattr(
+            request.app.state.config, "DATALAB_MARKER_USE_LLM", False
+        ),
+        "DATALAB_MARKER_OUTPUT_FORMAT": getattr(
+            request.app.state.config, "DATALAB_MARKER_OUTPUT_FORMAT", "markdown"
+        ),
+        "EXTERNAL_DOCUMENT_LOADER_URL": getattr(
+            request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_URL", ""
+        ),
+        "EXTERNAL_DOCUMENT_LOADER_API_KEY": getattr(
+            request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_API_KEY", ""
+        ),
         "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
         "PDF_LOADING_MODE": request.app.state.config.PDF_LOADING_MODE,
+        "PDF_LOADER_MODE": request.app.state.config.PDF_LOADING_MODE,
         "TIKA_SERVER_URL": request.app.state.config.TIKA_SERVER_URL,
         "DOCLING_SERVER_URL": request.app.state.config.DOCLING_SERVER_URL,
+        "DOCLING_API_KEY": getattr(request.app.state.config, "DOCLING_API_KEY", ""),
+        "DOCLING_PARAMS": getattr(request.app.state.config, "DOCLING_PARAMS", {}),
         "DOCUMENT_INTELLIGENCE_ENDPOINT": request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT,
         "DOCUMENT_INTELLIGENCE_KEY": request.app.state.config.DOCUMENT_INTELLIGENCE_KEY,
+        "DOCUMENT_INTELLIGENCE_MODEL": getattr(
+            request.app.state.config, "DOCUMENT_INTELLIGENCE_MODEL", "prebuilt-layout"
+        ),
+        "MISTRAL_OCR_API_BASE_URL": getattr(
+            request.app.state.config, "MISTRAL_OCR_API_BASE_URL", "https://api.mistral.ai/v1"
+        ),
         "MISTRAL_OCR_API_KEY": request.app.state.config.MISTRAL_OCR_API_KEY,
+        "MINERU_API_MODE": getattr(request.app.state.config, "MINERU_API_MODE", "local"),
+        "MINERU_API_URL": getattr(request.app.state.config, "MINERU_API_URL", "http://localhost:8000"),
+        "MINERU_API_KEY": getattr(request.app.state.config, "MINERU_API_KEY", ""),
+        "MINERU_API_TIMEOUT": getattr(request.app.state.config, "MINERU_API_TIMEOUT", "300"),
+        "MINERU_PARAMS": getattr(request.app.state.config, "MINERU_PARAMS", {}),
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
+        "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER": getattr(
+            request.app.state.config, "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER", False
+        ),
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
         "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
         "CHUNK_MIN_SIZE": request.app.state.config.CHUNK_MIN_SIZE,
+        "CHUNK_MIN_SIZE_TARGET": getattr(
+            request.app.state.config, "CHUNK_MIN_SIZE_TARGET", 0
+        ),
         # File upload settings
         "FILE_MAX_SIZE": request.app.state.config.FILE_MAX_SIZE,
         "FILE_MAX_COUNT": request.app.state.config.FILE_MAX_COUNT,
+        "FILE_IMAGE_COMPRESSION_WIDTH": getattr(
+            request.app.state.config, "FILE_IMAGE_COMPRESSION_WIDTH", None
+        ),
+        "FILE_IMAGE_COMPRESSION_HEIGHT": getattr(
+            request.app.state.config, "FILE_IMAGE_COMPRESSION_HEIGHT", None
+        ),
+        "ALLOWED_FILE_EXTENSIONS": getattr(
+            request.app.state.config, "ALLOWED_FILE_EXTENSIONS", []
+        ),
         # Integration settings
         "ENABLE_GOOGLE_DRIVE_INTEGRATION": request.app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION,
         "ENABLE_ONEDRIVE_INTEGRATION": request.app.state.config.ENABLE_ONEDRIVE_INTEGRATION,
@@ -521,6 +645,8 @@ class ConfigForm(BaseModel):
     # Hybrid search settings
     ENABLE_RAG_HYBRID_SEARCH: Optional[bool] = None
     RAG_HYBRID_SEARCH_BM25_WEIGHT: Optional[float] = None
+    HYBRID_BM25_WEIGHT: Optional[float] = None
+    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS: Optional[bool] = None
     TOP_K_RERANKER: Optional[int] = None
     RELEVANCE_THRESHOLD: Optional[float] = None
 
@@ -528,23 +654,51 @@ class ConfigForm(BaseModel):
     DOCUMENT_PROVIDER: Optional[str] = None
     DOCUMENT_PROVIDER_CONFIGS: Optional[dict] = None
     CONTENT_EXTRACTION_ENGINE: Optional[str] = None
+    DATALAB_MARKER_API_KEY: Optional[str] = None
+    DATALAB_MARKER_API_BASE_URL: Optional[str] = None
+    DATALAB_MARKER_ADDITIONAL_CONFIG: Optional[str] = None
+    DATALAB_MARKER_SKIP_CACHE: Optional[bool] = None
+    DATALAB_MARKER_FORCE_OCR: Optional[bool] = None
+    DATALAB_MARKER_PAGINATE: Optional[bool] = None
+    DATALAB_MARKER_STRIP_EXISTING_OCR: Optional[bool] = None
+    DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION: Optional[bool] = None
+    DATALAB_MARKER_FORMAT_LINES: Optional[bool] = None
+    DATALAB_MARKER_USE_LLM: Optional[bool] = None
+    DATALAB_MARKER_OUTPUT_FORMAT: Optional[str] = None
+    EXTERNAL_DOCUMENT_LOADER_URL: Optional[str] = None
+    EXTERNAL_DOCUMENT_LOADER_API_KEY: Optional[str] = None
     PDF_EXTRACT_IMAGES: Optional[bool] = None
     PDF_LOADING_MODE: Optional[str] = None
+    PDF_LOADER_MODE: Optional[str] = None
     TIKA_SERVER_URL: Optional[str] = None
     DOCLING_SERVER_URL: Optional[str] = None
+    DOCLING_API_KEY: Optional[str] = None
+    DOCLING_PARAMS: Optional[dict] = None
     DOCUMENT_INTELLIGENCE_ENDPOINT: Optional[str] = None
     DOCUMENT_INTELLIGENCE_KEY: Optional[str] = None
+    DOCUMENT_INTELLIGENCE_MODEL: Optional[str] = None
+    MISTRAL_OCR_API_BASE_URL: Optional[str] = None
     MISTRAL_OCR_API_KEY: Optional[str] = None
+    MINERU_API_MODE: Optional[str] = None
+    MINERU_API_URL: Optional[str] = None
+    MINERU_API_KEY: Optional[str] = None
+    MINERU_API_TIMEOUT: Optional[str] = None
+    MINERU_PARAMS: Optional[dict] = None
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
+    ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: Optional[bool] = None
     CHUNK_SIZE: Optional[int] = None
     CHUNK_OVERLAP: Optional[int] = None
     CHUNK_MIN_SIZE: Optional[int] = None
+    CHUNK_MIN_SIZE_TARGET: Optional[int] = None
 
     # File upload settings
-    FILE_MAX_SIZE: Optional[int] = None
-    FILE_MAX_COUNT: Optional[int] = None
+    FILE_MAX_SIZE: Optional[Union[int, str]] = None
+    FILE_MAX_COUNT: Optional[Union[int, str]] = None
+    FILE_IMAGE_COMPRESSION_WIDTH: Optional[Union[int, str]] = None
+    FILE_IMAGE_COMPRESSION_HEIGHT: Optional[Union[int, str]] = None
+    ALLOWED_FILE_EXTENSIONS: Optional[List[str]] = None
 
     # Integration settings
     ENABLE_GOOGLE_DRIVE_INTEGRATION: Optional[bool] = None
@@ -602,6 +756,13 @@ async def update_rag_config(
         if form_data.ENABLE_RAG_HYBRID_SEARCH is not None
         else request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
     )
+    request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = (
+        form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
+        if form_data.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS is not None
+        else getattr(
+            request.app.state.config, "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS", False
+        )
+    )
     # Free up memory if hybrid search is disabled
     if not request.app.state.config.ENABLE_RAG_HYBRID_SEARCH:
         reset_reranking_runtime(request.app)
@@ -609,6 +770,15 @@ async def update_rag_config(
     request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT = (
         form_data.RAG_HYBRID_SEARCH_BM25_WEIGHT
         if form_data.RAG_HYBRID_SEARCH_BM25_WEIGHT is not None
+        else (
+            form_data.HYBRID_BM25_WEIGHT
+            if form_data.HYBRID_BM25_WEIGHT is not None
+            else request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT
+        )
+    )
+    request.app.state.config.HYBRID_BM25_WEIGHT = (
+        request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT
+        if request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT is not None
         else request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT
     )
 
@@ -638,6 +808,73 @@ async def update_rag_config(
         if form_data.CONTENT_EXTRACTION_ENGINE is not None
         else request.app.state.config.CONTENT_EXTRACTION_ENGINE
     )
+    request.app.state.config.DATALAB_MARKER_API_KEY = (
+        form_data.DATALAB_MARKER_API_KEY
+        if form_data.DATALAB_MARKER_API_KEY is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_API_KEY", "")
+    )
+    request.app.state.config.DATALAB_MARKER_API_BASE_URL = (
+        form_data.DATALAB_MARKER_API_BASE_URL
+        if form_data.DATALAB_MARKER_API_BASE_URL is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_API_BASE_URL", "")
+    )
+    request.app.state.config.DATALAB_MARKER_ADDITIONAL_CONFIG = (
+        form_data.DATALAB_MARKER_ADDITIONAL_CONFIG
+        if form_data.DATALAB_MARKER_ADDITIONAL_CONFIG is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_ADDITIONAL_CONFIG", "")
+    )
+    request.app.state.config.DATALAB_MARKER_SKIP_CACHE = (
+        form_data.DATALAB_MARKER_SKIP_CACHE
+        if form_data.DATALAB_MARKER_SKIP_CACHE is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_SKIP_CACHE", False)
+    )
+    request.app.state.config.DATALAB_MARKER_FORCE_OCR = (
+        form_data.DATALAB_MARKER_FORCE_OCR
+        if form_data.DATALAB_MARKER_FORCE_OCR is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_FORCE_OCR", False)
+    )
+    request.app.state.config.DATALAB_MARKER_PAGINATE = (
+        form_data.DATALAB_MARKER_PAGINATE
+        if form_data.DATALAB_MARKER_PAGINATE is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_PAGINATE", False)
+    )
+    request.app.state.config.DATALAB_MARKER_STRIP_EXISTING_OCR = (
+        form_data.DATALAB_MARKER_STRIP_EXISTING_OCR
+        if form_data.DATALAB_MARKER_STRIP_EXISTING_OCR is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_STRIP_EXISTING_OCR", False)
+    )
+    request.app.state.config.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION = (
+        form_data.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION
+        if form_data.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION is not None
+        else getattr(
+            request.app.state.config, "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION", False
+        )
+    )
+    request.app.state.config.DATALAB_MARKER_FORMAT_LINES = (
+        form_data.DATALAB_MARKER_FORMAT_LINES
+        if form_data.DATALAB_MARKER_FORMAT_LINES is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_FORMAT_LINES", False)
+    )
+    request.app.state.config.DATALAB_MARKER_USE_LLM = (
+        form_data.DATALAB_MARKER_USE_LLM
+        if form_data.DATALAB_MARKER_USE_LLM is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_USE_LLM", False)
+    )
+    request.app.state.config.DATALAB_MARKER_OUTPUT_FORMAT = (
+        form_data.DATALAB_MARKER_OUTPUT_FORMAT
+        if form_data.DATALAB_MARKER_OUTPUT_FORMAT is not None
+        else getattr(request.app.state.config, "DATALAB_MARKER_OUTPUT_FORMAT", "markdown")
+    )
+    request.app.state.config.EXTERNAL_DOCUMENT_LOADER_URL = (
+        form_data.EXTERNAL_DOCUMENT_LOADER_URL
+        if form_data.EXTERNAL_DOCUMENT_LOADER_URL is not None
+        else getattr(request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_URL", "")
+    )
+    request.app.state.config.EXTERNAL_DOCUMENT_LOADER_API_KEY = (
+        form_data.EXTERNAL_DOCUMENT_LOADER_API_KEY
+        if form_data.EXTERNAL_DOCUMENT_LOADER_API_KEY is not None
+        else getattr(request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_API_KEY", "")
+    )
     request.app.state.config.PDF_EXTRACT_IMAGES = (
         form_data.PDF_EXTRACT_IMAGES
         if form_data.PDF_EXTRACT_IMAGES is not None
@@ -646,6 +883,15 @@ async def update_rag_config(
     request.app.state.config.PDF_LOADING_MODE = (
         form_data.PDF_LOADING_MODE
         if form_data.PDF_LOADING_MODE is not None
+        else (
+            form_data.PDF_LOADER_MODE
+            if form_data.PDF_LOADER_MODE is not None
+            else request.app.state.config.PDF_LOADING_MODE
+        )
+    )
+    request.app.state.config.PDF_LOADER_MODE = (
+        request.app.state.config.PDF_LOADING_MODE
+        if request.app.state.config.PDF_LOADING_MODE is not None
         else request.app.state.config.PDF_LOADING_MODE
     )
     request.app.state.config.TIKA_SERVER_URL = (
@@ -658,6 +904,16 @@ async def update_rag_config(
         if form_data.DOCLING_SERVER_URL is not None
         else request.app.state.config.DOCLING_SERVER_URL
     )
+    request.app.state.config.DOCLING_API_KEY = (
+        form_data.DOCLING_API_KEY
+        if form_data.DOCLING_API_KEY is not None
+        else getattr(request.app.state.config, "DOCLING_API_KEY", "")
+    )
+    request.app.state.config.DOCLING_PARAMS = (
+        form_data.DOCLING_PARAMS
+        if form_data.DOCLING_PARAMS is not None
+        else getattr(request.app.state.config, "DOCLING_PARAMS", {})
+    )
     request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT = (
         form_data.DOCUMENT_INTELLIGENCE_ENDPOINT
         if form_data.DOCUMENT_INTELLIGENCE_ENDPOINT is not None
@@ -668,18 +924,71 @@ async def update_rag_config(
         if form_data.DOCUMENT_INTELLIGENCE_KEY is not None
         else request.app.state.config.DOCUMENT_INTELLIGENCE_KEY
     )
+    request.app.state.config.DOCUMENT_INTELLIGENCE_MODEL = (
+        form_data.DOCUMENT_INTELLIGENCE_MODEL
+        if form_data.DOCUMENT_INTELLIGENCE_MODEL is not None
+        else getattr(request.app.state.config, "DOCUMENT_INTELLIGENCE_MODEL", "prebuilt-layout")
+    )
+    request.app.state.config.MISTRAL_OCR_API_BASE_URL = (
+        form_data.MISTRAL_OCR_API_BASE_URL
+        if form_data.MISTRAL_OCR_API_BASE_URL is not None
+        else getattr(request.app.state.config, "MISTRAL_OCR_API_BASE_URL", "https://api.mistral.ai/v1")
+    )
     request.app.state.config.MISTRAL_OCR_API_KEY = (
         form_data.MISTRAL_OCR_API_KEY
         if form_data.MISTRAL_OCR_API_KEY is not None
         else request.app.state.config.MISTRAL_OCR_API_KEY
     )
+    request.app.state.config.MINERU_API_MODE = (
+        form_data.MINERU_API_MODE
+        if form_data.MINERU_API_MODE is not None
+        else getattr(request.app.state.config, "MINERU_API_MODE", "local")
+    )
+    request.app.state.config.MINERU_API_URL = (
+        form_data.MINERU_API_URL
+        if form_data.MINERU_API_URL is not None
+        else getattr(request.app.state.config, "MINERU_API_URL", "http://localhost:8000")
+    )
+    request.app.state.config.MINERU_API_KEY = (
+        form_data.MINERU_API_KEY
+        if form_data.MINERU_API_KEY is not None
+        else getattr(request.app.state.config, "MINERU_API_KEY", "")
+    )
+    request.app.state.config.MINERU_API_TIMEOUT = (
+        form_data.MINERU_API_TIMEOUT
+        if form_data.MINERU_API_TIMEOUT is not None
+        else getattr(request.app.state.config, "MINERU_API_TIMEOUT", "300")
+    )
+    request.app.state.config.MINERU_PARAMS = (
+        form_data.MINERU_PARAMS
+        if form_data.MINERU_PARAMS is not None
+        else getattr(request.app.state.config, "MINERU_PARAMS", {})
+    )
 
     # Chunking settings
-    request.app.state.config.TEXT_SPLITTER = (
+    requested_text_splitter = (
         form_data.TEXT_SPLITTER
         if form_data.TEXT_SPLITTER is not None
         else request.app.state.config.TEXT_SPLITTER
     )
+    if requested_text_splitter == "markdown":
+        request.app.state.config.TEXT_SPLITTER = ""
+        request.app.state.config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = (
+            form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER
+            if form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER is not None
+            else True
+        )
+    else:
+        request.app.state.config.TEXT_SPLITTER = requested_text_splitter
+        request.app.state.config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = (
+            form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER
+            if form_data.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER is not None
+            else getattr(
+                request.app.state.config,
+                "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER",
+                False,
+            )
+        )
     request.app.state.config.CHUNK_SIZE = (
         form_data.CHUNK_SIZE
         if form_data.CHUNK_SIZE is not None
@@ -695,18 +1004,43 @@ async def update_rag_config(
         if form_data.CHUNK_MIN_SIZE is not None
         else request.app.state.config.CHUNK_MIN_SIZE
     )
+    request.app.state.config.CHUNK_MIN_SIZE_TARGET = (
+        form_data.CHUNK_MIN_SIZE_TARGET
+        if form_data.CHUNK_MIN_SIZE_TARGET is not None
+        else getattr(request.app.state.config, "CHUNK_MIN_SIZE_TARGET", 0)
+    )
 
     # File upload settings
-    request.app.state.config.FILE_MAX_SIZE = (
-        form_data.FILE_MAX_SIZE
-        if form_data.FILE_MAX_SIZE is not None
-        else request.app.state.config.FILE_MAX_SIZE
-    )
-    request.app.state.config.FILE_MAX_COUNT = (
-        form_data.FILE_MAX_COUNT
-        if form_data.FILE_MAX_COUNT is not None
-        else request.app.state.config.FILE_MAX_COUNT
-    )
+    if form_data.FILE_MAX_SIZE is not None:
+        request.app.state.config.FILE_MAX_SIZE = (
+            None if form_data.FILE_MAX_SIZE == "" else form_data.FILE_MAX_SIZE
+        )
+    if form_data.FILE_MAX_COUNT is not None:
+        request.app.state.config.FILE_MAX_COUNT = (
+            None if form_data.FILE_MAX_COUNT == "" else form_data.FILE_MAX_COUNT
+        )
+    if form_data.FILE_IMAGE_COMPRESSION_WIDTH is not None:
+        request.app.state.config.FILE_IMAGE_COMPRESSION_WIDTH = (
+            None
+            if form_data.FILE_IMAGE_COMPRESSION_WIDTH == ""
+            else form_data.FILE_IMAGE_COMPRESSION_WIDTH
+        )
+    if form_data.FILE_IMAGE_COMPRESSION_HEIGHT is not None:
+        request.app.state.config.FILE_IMAGE_COMPRESSION_HEIGHT = (
+            None
+            if form_data.FILE_IMAGE_COMPRESSION_HEIGHT == ""
+            else form_data.FILE_IMAGE_COMPRESSION_HEIGHT
+        )
+    if form_data.ALLOWED_FILE_EXTENSIONS is not None:
+        request.app.state.config.ALLOWED_FILE_EXTENSIONS = [
+            str(ext).strip().lower().lstrip(".")
+            for ext in form_data.ALLOWED_FILE_EXTENSIONS
+            if str(ext).strip()
+        ]
+    else:
+        request.app.state.config.ALLOWED_FILE_EXTENSIONS = getattr(
+            request.app.state.config, "ALLOWED_FILE_EXTENSIONS", []
+        )
 
     # Integration settings
     request.app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION = (
@@ -875,104 +1209,84 @@ async def update_rag_config(
                 form_data.web.FIRECRAWL_TIMEOUT
             )
 
-    return {
-        "status": True,
-        # RAG settings
-        "RAG_TEMPLATE": request.app.state.config.RAG_TEMPLATE,
-        "RAG_SYSTEM_CONTEXT": request.app.state.config.RAG_SYSTEM_CONTEXT,
-        "TOP_K": request.app.state.config.TOP_K,
-        "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
-        "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
-        "FILE_PROCESSING_DEFAULT_MODE": request.app.state.config.FILE_PROCESSING_DEFAULT_MODE,
-        # Hybrid search settings
-        "ENABLE_RAG_HYBRID_SEARCH": request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
-        "RAG_HYBRID_SEARCH_BM25_WEIGHT": request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
-        "TOP_K_RERANKER": request.app.state.config.TOP_K_RERANKER,
-        "RELEVANCE_THRESHOLD": request.app.state.config.RELEVANCE_THRESHOLD,
-        # Content extraction settings
-        "DOCUMENT_PROVIDER": request.app.state.config.DOCUMENT_PROVIDER,
-        "DOCUMENT_PROVIDER_CONFIGS": request.app.state.config.DOCUMENT_PROVIDER_CONFIGS,
-        "CONTENT_EXTRACTION_ENGINE": request.app.state.config.CONTENT_EXTRACTION_ENGINE,
-        "PDF_EXTRACT_IMAGES": request.app.state.config.PDF_EXTRACT_IMAGES,
-        "PDF_LOADING_MODE": request.app.state.config.PDF_LOADING_MODE,
-        "TIKA_SERVER_URL": request.app.state.config.TIKA_SERVER_URL,
-        "DOCLING_SERVER_URL": request.app.state.config.DOCLING_SERVER_URL,
-        "DOCUMENT_INTELLIGENCE_ENDPOINT": request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT,
-        "DOCUMENT_INTELLIGENCE_KEY": request.app.state.config.DOCUMENT_INTELLIGENCE_KEY,
-        "MISTRAL_OCR_API_KEY": request.app.state.config.MISTRAL_OCR_API_KEY,
-        # Chunking settings
-        "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
-        "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,
-        "CHUNK_OVERLAP": request.app.state.config.CHUNK_OVERLAP,
-        "CHUNK_MIN_SIZE": request.app.state.config.CHUNK_MIN_SIZE,
-        # File upload settings
-        "FILE_MAX_SIZE": request.app.state.config.FILE_MAX_SIZE,
-        "FILE_MAX_COUNT": request.app.state.config.FILE_MAX_COUNT,
-        # Integration settings
-        "ENABLE_GOOGLE_DRIVE_INTEGRATION": request.app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION,
-        "ENABLE_ONEDRIVE_INTEGRATION": request.app.state.config.ENABLE_ONEDRIVE_INTEGRATION,
-        # Web search settings
-        "web": {
-            "ENABLE_WEB_SEARCH": request.app.state.config.ENABLE_WEB_SEARCH,
-            "ENABLE_NATIVE_WEB_SEARCH": request.app.state.config.ENABLE_NATIVE_WEB_SEARCH,
-            "WEB_SEARCH_ENGINE": request.app.state.config.WEB_SEARCH_ENGINE,
-            "WEB_SEARCH_TRUST_ENV": request.app.state.config.WEB_SEARCH_TRUST_ENV,
-            "WEB_SEARCH_RESULT_COUNT": request.app.state.config.WEB_SEARCH_RESULT_COUNT,
-            "WEB_SEARCH_CONCURRENT_REQUESTS": request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS,
-            "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
-            "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
-            "SEARXNG_QUERY_URL": request.app.state.config.SEARXNG_QUERY_URL,
-            "GOOGLE_PSE_API_KEY": request.app.state.config.GOOGLE_PSE_API_KEY,
-            "GOOGLE_PSE_ENGINE_ID": request.app.state.config.GOOGLE_PSE_ENGINE_ID,
-            "BRAVE_SEARCH_API_KEY": request.app.state.config.BRAVE_SEARCH_API_KEY,
-            "KAGI_SEARCH_API_KEY": request.app.state.config.KAGI_SEARCH_API_KEY,
-            "MOJEEK_SEARCH_API_KEY": request.app.state.config.MOJEEK_SEARCH_API_KEY,
-            "BOCHA_SEARCH_API_KEY": request.app.state.config.BOCHA_SEARCH_API_KEY,
-            "SERPSTACK_API_KEY": request.app.state.config.SERPSTACK_API_KEY,
-            "SERPSTACK_HTTPS": request.app.state.config.SERPSTACK_HTTPS,
-            "SERPER_API_KEY": request.app.state.config.SERPER_API_KEY,
-            "SERPLY_API_KEY": request.app.state.config.SERPLY_API_KEY,
-            "TAVILY_API_KEY": request.app.state.config.TAVILY_API_KEY,
-            "TAVILY_SEARCH_API_BASE_URL": request.app.state.config.TAVILY_SEARCH_API_BASE_URL,
-            "TAVILY_SEARCH_API_FORCE_MODE": request.app.state.config.TAVILY_SEARCH_API_FORCE_MODE,
-            "SEARCHAPI_API_KEY": request.app.state.config.SEARCHAPI_API_KEY,
-            "SEARCHAPI_ENGINE": request.app.state.config.SEARCHAPI_ENGINE,
-            "SERPAPI_API_KEY": request.app.state.config.SERPAPI_API_KEY,
-            "SERPAPI_ENGINE": request.app.state.config.SERPAPI_ENGINE,
-            "JINA_API_KEY": request.app.state.config.JINA_API_KEY,
-            "BING_SEARCH_V7_ENDPOINT": request.app.state.config.BING_SEARCH_V7_ENDPOINT,
-            "BING_SEARCH_V7_SUBSCRIPTION_KEY": request.app.state.config.BING_SEARCH_V7_SUBSCRIPTION_KEY,
-            "EXA_API_KEY": request.app.state.config.EXA_API_KEY,
-            "PERPLEXITY_API_KEY": request.app.state.config.PERPLEXITY_API_KEY,
-            "GROK_API_KEY": request.app.state.config.GROK_API_KEY,
-            "GROK_API_BASE_URL": request.app.state.config.GROK_API_BASE_URL,
-            "GROK_API_MODEL": request.app.state.config.GROK_API_MODEL,
-            "GROK_API_MODE": request.app.state.config.GROK_API_MODE,
-            "SOUGOU_API_SID": request.app.state.config.SOUGOU_API_SID,
-            "SOUGOU_API_SK": request.app.state.config.SOUGOU_API_SK,
-            "WEB_LOADER_ENGINE": request.app.state.config.WEB_LOADER_ENGINE,
-            "ENABLE_WEB_LOADER_SSL_VERIFICATION": request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION,
-            "PLAYWRIGHT_WS_URL": request.app.state.config.PLAYWRIGHT_WS_URL,
-            "PLAYWRIGHT_TIMEOUT": request.app.state.config.PLAYWRIGHT_TIMEOUT,
-            "FIRECRAWL_API_KEY": request.app.state.config.FIRECRAWL_API_KEY,
-            "FIRECRAWL_API_BASE_URL": request.app.state.config.FIRECRAWL_API_BASE_URL,
-            "TAVILY_EXTRACT_DEPTH": request.app.state.config.TAVILY_EXTRACT_DEPTH,
-            "TAVILY_EXTRACT_API_BASE_URL": request.app.state.config.TAVILY_EXTRACT_API_BASE_URL,
-            "TAVILY_EXTRACT_API_FORCE_MODE": request.app.state.config.TAVILY_EXTRACT_API_FORCE_MODE,
-            "YOUTUBE_LOADER_LANGUAGE": request.app.state.config.YOUTUBE_LOADER_LANGUAGE,
-            "YOUTUBE_LOADER_PROXY_URL": request.app.state.config.YOUTUBE_LOADER_PROXY_URL,
-            "YOUTUBE_LOADER_TRANSLATION": request.app.state.YOUTUBE_LOADER_TRANSLATION,
-            "DDGS_BACKEND": request.app.state.config.DDGS_BACKEND,
-            "JINA_API_BASE_URL": request.app.state.config.JINA_API_BASE_URL,
-            "FIRECRAWL_TIMEOUT": request.app.state.config.FIRECRAWL_TIMEOUT,
-        },
-    }
+    return await get_rag_config(request, user)
 
 ####################################
 #
 # Document process and retrieval
 #
 ####################################
+
+
+def can_merge_chunks(a: Document, b: Document) -> bool:
+    if a.metadata.get("source") != b.metadata.get("source"):
+        return False
+
+    a_file_id = a.metadata.get("file_id")
+    b_file_id = b.metadata.get("file_id")
+
+    if a_file_id is not None and b_file_id is not None:
+        return a_file_id == b_file_id
+
+    return True
+
+
+def merge_docs_to_target_size(
+    request: Request,
+    chunks: list[Document],
+) -> list[Document]:
+    min_chunk_size_target = getattr(request.app.state.config, "CHUNK_MIN_SIZE_TARGET", 0)
+    max_chunk_size = request.app.state.config.CHUNK_SIZE
+
+    if min_chunk_size_target <= 0:
+        return chunks
+
+    measure_chunk_size = len
+    if request.app.state.config.TEXT_SPLITTER == "token":
+        encoding = tiktoken.get_encoding(
+            str(request.app.state.config.TIKTOKEN_ENCODING_NAME)
+        )
+        measure_chunk_size = lambda text: len(encoding.encode(text))
+
+    processed_chunks: list[Document] = []
+
+    current_chunk: Optional[Document] = None
+    current_content = ""
+
+    for next_chunk in chunks:
+        if current_chunk is None:
+            current_chunk = next_chunk
+            current_content = next_chunk.page_content
+            continue
+
+        proposed_content = f"{current_content}\n\n{next_chunk.page_content}"
+        can_merge = (
+            can_merge_chunks(current_chunk, next_chunk)
+            and measure_chunk_size(current_content) < min_chunk_size_target
+            and measure_chunk_size(proposed_content) <= max_chunk_size
+        )
+
+        if can_merge:
+            current_content = proposed_content
+        else:
+            processed_chunks.append(
+                Document(
+                    page_content=current_content,
+                    metadata={**current_chunk.metadata},
+                )
+            )
+            current_chunk = next_chunk
+            current_content = next_chunk.page_content
+
+    if current_chunk is not None:
+        processed_chunks.append(
+            Document(
+                page_content=current_content,
+                metadata={**current_chunk.metadata},
+            )
+        )
+
+    return processed_chunks
 
 
 def save_docs_to_vector_db(
@@ -1012,7 +1326,7 @@ def save_docs_to_vector_db(
             filter={"hash": metadata["hash"]},
         )
 
-        if result is not None:
+        if result is not None and result.ids and len(result.ids) > 0:
             existing_doc_ids = result.ids[0]
             if existing_doc_ids:
                 if overwrite:
@@ -1047,12 +1361,44 @@ def save_docs_to_vector_db(
             log.warning(f"Failed to clean stale vectors for file_id={metadata.get('file_id')}: {e}")
 
     if split:
+        if getattr(
+            request.app.state.config, "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER", False
+        ):
+            markdown_splitter = MarkdownHeaderTextSplitter(
+                headers_to_split_on=[
+                    ("#", "Header 1"),
+                    ("##", "Header 2"),
+                    ("###", "Header 3"),
+                    ("####", "Header 4"),
+                    ("#####", "Header 5"),
+                    ("######", "Header 6"),
+                ],
+                strip_headers=False,
+            )
+
+            split_docs = []
+            for doc in docs:
+                split_docs.extend(
+                    [
+                        Document(
+                            page_content=split_chunk.page_content,
+                            metadata={**doc.metadata},
+                        )
+                        for split_chunk in markdown_splitter.split_text(doc.page_content)
+                    ]
+                )
+
+            docs = split_docs
+            if getattr(request.app.state.config, "CHUNK_MIN_SIZE_TARGET", 0) > 0:
+                docs = merge_docs_to_target_size(request, docs)
+
         if request.app.state.config.TEXT_SPLITTER in ["", "character"]:
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=request.app.state.config.CHUNK_SIZE,
                 chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
                 add_start_index=True,
             )
+            docs = text_splitter.split_documents(docs)
         elif request.app.state.config.TEXT_SPLITTER == "token":
             log.info(
                 f"Using token text splitter: {request.app.state.config.TIKTOKEN_ENCODING_NAME}"
@@ -1065,40 +1411,9 @@ def save_docs_to_vector_db(
                 chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
                 add_start_index=True,
             )
-        elif request.app.state.config.TEXT_SPLITTER == "markdown":
-            from langchain.text_splitter import MarkdownHeaderTextSplitter
-
-            headers_to_split_on = [
-                ("#", "header_1"),
-                ("##", "header_2"),
-                ("###", "header_3"),
-                ("####", "header_4"),
-            ]
-            md_splitter = MarkdownHeaderTextSplitter(
-                headers_to_split_on=headers_to_split_on,
-                strip_headers=False,
-            )
-            # MarkdownHeaderTextSplitter works on text, not Documents; post-split with character splitter for size control
-            split_docs = []
-            for doc in docs:
-                md_chunks = md_splitter.split_text(doc.page_content)
-                for chunk in md_chunks:
-                    chunk.metadata = {**doc.metadata, **chunk.metadata}
-                split_docs.extend(md_chunks)
-            # Further split large markdown sections to respect chunk_size
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=request.app.state.config.CHUNK_SIZE,
-                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
-                add_start_index=True,
-            )
-            docs = text_splitter.split_documents(split_docs)
-            # Skip the normal split_documents call below
-            text_splitter = None
+            docs = text_splitter.split_documents(docs)
         else:
             raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
-
-        if text_splitter is not None:
-            docs = text_splitter.split_documents(docs)
 
         # Merge chunks smaller than CHUNK_MIN_SIZE with adjacent chunks
         min_size = request.app.state.config.CHUNK_MIN_SIZE
@@ -2239,6 +2554,11 @@ def query_doc_handler(
                     else request.app.state.config.RELEVANCE_THRESHOLD
                 ),
                 bm25_weight=request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+                enable_enriched_texts=getattr(
+                    request.app.state.config,
+                    "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
+                    False,
+                ),
                 user=user,
             )
         else:
@@ -2296,6 +2616,11 @@ def query_collection_handler(
                     else request.app.state.config.RELEVANCE_THRESHOLD
                 ),
                 bm25_weight=request.app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT,
+                enable_enriched_texts=getattr(
+                    request.app.state.config,
+                    "ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS",
+                    False,
+                ),
             )
         else:
             return query_collection(

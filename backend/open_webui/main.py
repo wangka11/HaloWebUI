@@ -103,6 +103,7 @@ from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 from open_webui.utils.user_tools import (
     TOOL_CALLING_MODE_KEY,
+    TOOL_CALLING_MODE_OFF,
     TOOL_CALLING_MODE_NATIVE,
     get_user_native_tools_config,
     normalize_tool_calling_mode,
@@ -238,29 +239,61 @@ from open_webui.config import (
     RAG_RERANKING_MODEL,
     RAG_EMBEDDING_ENGINE,
     RAG_EMBEDDING_BATCH_SIZE,
+    ENABLE_ASYNC_EMBEDDING,
     RAG_EMBEDDING_CONCURRENT_REQUESTS,
     RAG_RELEVANCE_THRESHOLD,
+    ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
     RAG_FILE_MAX_COUNT,
     RAG_FILE_MAX_SIZE,
+    RAG_ALLOWED_FILE_EXTENSIONS,
+    FILE_IMAGE_COMPRESSION_WIDTH,
+    FILE_IMAGE_COMPRESSION_HEIGHT,
     RAG_OPENAI_API_BASE_URL,
     RAG_OPENAI_API_KEY,
+    RAG_AZURE_OPENAI_BASE_URL,
+    RAG_AZURE_OPENAI_API_KEY,
+    RAG_AZURE_OPENAI_API_VERSION,
     RAG_OLLAMA_BASE_URL,
     RAG_OLLAMA_API_KEY,
     CHUNK_OVERLAP,
+    CHUNK_MIN_SIZE_TARGET,
     CHUNK_SIZE,
     CHUNK_MIN_SIZE,
     FILE_PROCESSING_DEFAULT_MODE,
     CONTENT_EXTRACTION_ENGINE,
     DOCUMENT_PROVIDER,
     DOCUMENT_PROVIDER_CONFIGS,
+    DATALAB_MARKER_API_KEY,
+    DATALAB_MARKER_API_BASE_URL,
+    DATALAB_MARKER_ADDITIONAL_CONFIG,
+    DATALAB_MARKER_SKIP_CACHE,
+    DATALAB_MARKER_FORCE_OCR,
+    DATALAB_MARKER_PAGINATE,
+    DATALAB_MARKER_STRIP_EXISTING_OCR,
+    DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION,
+    DATALAB_MARKER_FORMAT_LINES,
+    DATALAB_MARKER_OUTPUT_FORMAT,
+    MINERU_API_MODE,
+    MINERU_API_URL,
+    MINERU_API_KEY,
+    MINERU_API_TIMEOUT,
+    MINERU_PARAMS,
+    DATALAB_MARKER_USE_LLM,
+    EXTERNAL_DOCUMENT_LOADER_URL,
+    EXTERNAL_DOCUMENT_LOADER_API_KEY,
     TIKA_SERVER_URL,
     DOCLING_SERVER_URL,
+    DOCLING_API_KEY,
+    DOCLING_PARAMS,
     DOCUMENT_INTELLIGENCE_ENDPOINT,
     DOCUMENT_INTELLIGENCE_KEY,
+    DOCUMENT_INTELLIGENCE_MODEL,
+    MISTRAL_OCR_API_BASE_URL,
     MISTRAL_OCR_API_KEY,
     RAG_TOP_K,
     RAG_TOP_K_RERANKER,
     RAG_TEXT_SPLITTER,
+    ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER,
     TIKTOKEN_ENCODING_NAME,
     PDF_EXTRACT_IMAGES,
     PDF_LOADING_MODE,
@@ -802,13 +835,18 @@ app.state.FUNCTIONS = {}
 app.state.config.TOP_K = RAG_TOP_K
 app.state.config.TOP_K_RERANKER = RAG_TOP_K_RERANKER
 app.state.config.RELEVANCE_THRESHOLD = RAG_RELEVANCE_THRESHOLD
+app.state.config.HYBRID_BM25_WEIGHT = RAG_HYBRID_SEARCH_BM25_WEIGHT
+app.state.config.ALLOWED_FILE_EXTENSIONS = RAG_ALLOWED_FILE_EXTENSIONS
 app.state.config.FILE_MAX_SIZE = RAG_FILE_MAX_SIZE
 app.state.config.FILE_MAX_COUNT = RAG_FILE_MAX_COUNT
+app.state.config.FILE_IMAGE_COMPRESSION_WIDTH = FILE_IMAGE_COMPRESSION_WIDTH
+app.state.config.FILE_IMAGE_COMPRESSION_HEIGHT = FILE_IMAGE_COMPRESSION_HEIGHT
 
 
 app.state.config.RAG_FULL_CONTEXT = RAG_FULL_CONTEXT
 app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL = BYPASS_EMBEDDING_AND_RETRIEVAL
 app.state.config.ENABLE_RAG_HYBRID_SEARCH = ENABLE_RAG_HYBRID_SEARCH
+app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS = ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS
 app.state.config.RAG_HYBRID_SEARCH_BM25_WEIGHT = RAG_HYBRID_SEARCH_BM25_WEIGHT
 app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION = ENABLE_WEB_LOADER_SSL_VERIFICATION
 
@@ -816,22 +854,47 @@ app.state.config.FILE_PROCESSING_DEFAULT_MODE = FILE_PROCESSING_DEFAULT_MODE
 app.state.config.CONTENT_EXTRACTION_ENGINE = CONTENT_EXTRACTION_ENGINE
 app.state.config.DOCUMENT_PROVIDER = DOCUMENT_PROVIDER
 app.state.config.DOCUMENT_PROVIDER_CONFIGS = DOCUMENT_PROVIDER_CONFIGS
+app.state.config.DATALAB_MARKER_API_KEY = DATALAB_MARKER_API_KEY
+app.state.config.DATALAB_MARKER_API_BASE_URL = DATALAB_MARKER_API_BASE_URL
+app.state.config.DATALAB_MARKER_ADDITIONAL_CONFIG = DATALAB_MARKER_ADDITIONAL_CONFIG
+app.state.config.DATALAB_MARKER_SKIP_CACHE = DATALAB_MARKER_SKIP_CACHE
+app.state.config.DATALAB_MARKER_FORCE_OCR = DATALAB_MARKER_FORCE_OCR
+app.state.config.DATALAB_MARKER_PAGINATE = DATALAB_MARKER_PAGINATE
+app.state.config.DATALAB_MARKER_STRIP_EXISTING_OCR = DATALAB_MARKER_STRIP_EXISTING_OCR
+app.state.config.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION = DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION
+app.state.config.DATALAB_MARKER_FORMAT_LINES = DATALAB_MARKER_FORMAT_LINES
+app.state.config.DATALAB_MARKER_USE_LLM = DATALAB_MARKER_USE_LLM
+app.state.config.DATALAB_MARKER_OUTPUT_FORMAT = DATALAB_MARKER_OUTPUT_FORMAT
+app.state.config.EXTERNAL_DOCUMENT_LOADER_URL = EXTERNAL_DOCUMENT_LOADER_URL
+app.state.config.EXTERNAL_DOCUMENT_LOADER_API_KEY = EXTERNAL_DOCUMENT_LOADER_API_KEY
+app.state.config.MINERU_API_MODE = MINERU_API_MODE
+app.state.config.MINERU_API_URL = MINERU_API_URL
+app.state.config.MINERU_API_KEY = MINERU_API_KEY
+app.state.config.MINERU_API_TIMEOUT = MINERU_API_TIMEOUT
+app.state.config.MINERU_PARAMS = MINERU_PARAMS
 app.state.config.TIKA_SERVER_URL = TIKA_SERVER_URL
 app.state.config.DOCLING_SERVER_URL = DOCLING_SERVER_URL
+app.state.config.DOCLING_API_KEY = DOCLING_API_KEY
+app.state.config.DOCLING_PARAMS = DOCLING_PARAMS
 app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT = DOCUMENT_INTELLIGENCE_ENDPOINT
 app.state.config.DOCUMENT_INTELLIGENCE_KEY = DOCUMENT_INTELLIGENCE_KEY
+app.state.config.DOCUMENT_INTELLIGENCE_MODEL = DOCUMENT_INTELLIGENCE_MODEL
+app.state.config.MISTRAL_OCR_API_BASE_URL = MISTRAL_OCR_API_BASE_URL
 app.state.config.MISTRAL_OCR_API_KEY = MISTRAL_OCR_API_KEY
 
 app.state.config.TEXT_SPLITTER = RAG_TEXT_SPLITTER
+app.state.config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER = ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER
 app.state.config.TIKTOKEN_ENCODING_NAME = TIKTOKEN_ENCODING_NAME
 
 app.state.config.CHUNK_SIZE = CHUNK_SIZE
+app.state.config.CHUNK_MIN_SIZE_TARGET = CHUNK_MIN_SIZE_TARGET
 app.state.config.CHUNK_OVERLAP = CHUNK_OVERLAP
 app.state.config.CHUNK_MIN_SIZE = CHUNK_MIN_SIZE
 
 app.state.config.RAG_EMBEDDING_ENGINE = RAG_EMBEDDING_ENGINE
 app.state.config.RAG_EMBEDDING_MODEL = RAG_EMBEDDING_MODEL
 app.state.config.RAG_EMBEDDING_BATCH_SIZE = RAG_EMBEDDING_BATCH_SIZE
+app.state.config.ENABLE_ASYNC_EMBEDDING = ENABLE_ASYNC_EMBEDDING
 app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS = RAG_EMBEDDING_CONCURRENT_REQUESTS
 app.state.config.RAG_RERANKING_ENGINE = RAG_RERANKING_ENGINE
 app.state.config.RAG_RERANKING_MODEL = RAG_RERANKING_MODEL
@@ -840,6 +903,9 @@ app.state.config.RAG_SYSTEM_CONTEXT = RAG_SYSTEM_CONTEXT
 
 app.state.config.RAG_OPENAI_API_BASE_URL = RAG_OPENAI_API_BASE_URL
 app.state.config.RAG_OPENAI_API_KEY = RAG_OPENAI_API_KEY
+app.state.config.RAG_AZURE_OPENAI_BASE_URL = RAG_AZURE_OPENAI_BASE_URL
+app.state.config.RAG_AZURE_OPENAI_API_KEY = RAG_AZURE_OPENAI_API_KEY
+app.state.config.RAG_AZURE_OPENAI_API_VERSION = RAG_AZURE_OPENAI_API_VERSION
 app.state.config.RAG_RERANKING_API_BASE_URL = RAG_RERANKING_API_BASE_URL
 app.state.config.RAG_RERANKING_API_KEY = RAG_RERANKING_API_KEY
 app.state.config.RAG_RERANKING_TIMEOUT = RAG_RERANKING_TIMEOUT
@@ -1400,29 +1466,37 @@ async def chat_completion(
         )
 
         # Resolve function calling mode with explicit overrides:
-        # - If the request sets params.function_calling, it wins (native enables native mode;
-        #   any other value forces compatibility/default mode).
+        # - If the request sets params.function_calling, it wins.
         # - Else if the model sets function_calling, it wins.
         # - Else fall back to the global default (TOOL_CALLING_MODE).
-        function_calling_native = False
+        effective_tool_calling_mode = None
         if requested_function_calling is not None:
-            function_calling_native = str(requested_function_calling).lower() == "native"
+            effective_tool_calling_mode = normalize_tool_calling_mode(
+                requested_function_calling,
+            )
         elif model_function_calling is not None:
-            function_calling_native = str(model_function_calling).lower() == "native"
+            effective_tool_calling_mode = normalize_tool_calling_mode(
+                model_function_calling,
+            )
         else:
             # Per-account default (admins and users). Global config remains the fallback default.
             native_cfg = get_user_native_tools_config(request, user)
-            effective_mode = normalize_tool_calling_mode(
+            effective_tool_calling_mode = normalize_tool_calling_mode(
                 (native_cfg or {}).get(TOOL_CALLING_MODE_KEY),
             )
-            function_calling_native = effective_mode == TOOL_CALLING_MODE_NATIVE
+        function_calling_native = effective_tool_calling_mode == TOOL_CALLING_MODE_NATIVE
+        tool_calling_disabled = effective_tool_calling_mode == TOOL_CALLING_MODE_OFF
+        preview_tool_compat = (
+            form_data.pop("preview_tool_compat", False) is True and not tool_calling_disabled
+        )
 
         metadata = {
             "user_id": user.id,
             "chat_id": form_data.pop("chat_id", None),
             "message_id": form_data.pop("id", None),
             "session_id": form_data.pop("session_id", None),
-            "preview_tool_compat": form_data.pop("preview_tool_compat", False) is True,
+            "preview_tool_compat": preview_tool_compat,
+            "tool_calling_mode": effective_tool_calling_mode,
             "tool_ids": form_data.get("tool_ids", None),
             "tool_servers": form_data.pop("tool_servers", None),
             "files": form_data.get("files", None),
@@ -1826,6 +1900,10 @@ async def get_app_config(request: Request):
                 "file": {
                     "max_size": app.state.config.FILE_MAX_SIZE,
                     "max_count": app.state.config.FILE_MAX_COUNT,
+                    "image_compression": {
+                        "width": app.state.config.FILE_IMAGE_COMPRESSION_WIDTH,
+                        "height": app.state.config.FILE_IMAGE_COMPRESSION_HEIGHT,
+                    },
                 },
                 "permissions": {**app.state.config.USER_PERMISSIONS},
                 "google_drive": {

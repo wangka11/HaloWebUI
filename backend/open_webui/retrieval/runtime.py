@@ -220,14 +220,29 @@ def ensure_embedding_runtime(app):
             (
                 app.state.config.RAG_OPENAI_API_BASE_URL
                 if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else app.state.config.RAG_OLLAMA_BASE_URL
+                else (
+                    app.state.config.RAG_AZURE_OPENAI_BASE_URL
+                    if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
+                    else app.state.config.RAG_OLLAMA_BASE_URL
+                )
             ),
             (
                 app.state.config.RAG_OPENAI_API_KEY
                 if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else app.state.config.RAG_OLLAMA_API_KEY
+                else (
+                    app.state.config.RAG_AZURE_OPENAI_API_KEY
+                    if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
+                    else app.state.config.RAG_OLLAMA_API_KEY
+                )
             ),
             app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            azure_api_version=(
+                app.state.config.RAG_AZURE_OPENAI_API_VERSION
+                if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
+                else None
+            ),
+            enable_async=getattr(app.state.config, "ENABLE_ASYNC_EMBEDDING", True),
+            concurrent_requests=app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
         )
 
     return app.state._EMBEDDING_FUNCTION_IMPL

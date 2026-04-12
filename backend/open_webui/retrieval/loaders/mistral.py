@@ -24,7 +24,13 @@ class MistralLoader:
     OCR_TIMEOUT = 120
     DELETE_TIMEOUT = 30
 
-    def __init__(self, api_key: str, file_path: str, mime_type: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        file_path: str,
+        mime_type: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
         """
         Initializes the loader.
 
@@ -40,6 +46,7 @@ class MistralLoader:
         self.api_key = api_key
         self.file_path = file_path
         self.headers = {"Authorization": f"Bearer {self.api_key}"}
+        self.base_url = (base_url or self.BASE_API_URL).rstrip("/")
         self.mime_type = (
             mime_type
             or mimetypes.guess_type(self.file_path)[0]
@@ -67,7 +74,7 @@ class MistralLoader:
     def _upload_file(self) -> str:
         """Uploads the file to Mistral for OCR processing."""
         log.info("Uploading file to Mistral API")
-        url = f"{self.BASE_API_URL}/files"
+        url = f"{self.base_url}/files"
         file_name = os.path.basename(self.file_path)
 
         try:
@@ -98,7 +105,7 @@ class MistralLoader:
     def _get_signed_url(self, file_id: str) -> str:
         """Retrieves a temporary signed URL for the uploaded file."""
         log.info(f"Getting signed URL for file ID: {file_id}")
-        url = f"{self.BASE_API_URL}/files/{file_id}/url"
+        url = f"{self.base_url}/files/{file_id}/url"
         params = {"expiry": 1}
         signed_url_headers = {**self.headers, "Accept": "application/json"}
 
@@ -122,7 +129,7 @@ class MistralLoader:
     def _process_ocr(self, signed_url: str) -> Dict[str, Any]:
         """Sends the signed URL to the OCR endpoint for processing."""
         log.info("Processing OCR via Mistral API")
-        url = f"{self.BASE_API_URL}/ocr"
+        url = f"{self.base_url}/ocr"
         ocr_headers = {
             **self.headers,
             "Content-Type": "application/json",
@@ -155,7 +162,7 @@ class MistralLoader:
     def _delete_file(self, file_id: str) -> None:
         """Deletes the file from Mistral storage."""
         log.info(f"Deleting uploaded file ID: {file_id}")
-        url = f"{self.BASE_API_URL}/files/{file_id}"
+        url = f"{self.base_url}/files/{file_id}"
         # No specific Accept header needed, default or Authorization is usually sufficient
 
         try:

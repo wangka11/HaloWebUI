@@ -212,13 +212,70 @@ def _get_loader_for_provider(
 
     return Loader(
         engine=engine,
+        user=getattr(request.state, "user", None),
+        EXTERNAL_DOCUMENT_LOADER_URL=getattr(
+            request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_URL", ""
+        ),
+        EXTERNAL_DOCUMENT_LOADER_API_KEY=getattr(
+            request.app.state.config, "EXTERNAL_DOCUMENT_LOADER_API_KEY", ""
+        ),
         TIKA_SERVER_URL=request.app.state.config.TIKA_SERVER_URL,
         DOCLING_SERVER_URL=request.app.state.config.DOCLING_SERVER_URL,
+        DOCLING_API_KEY=getattr(request.app.state.config, "DOCLING_API_KEY", ""),
+        DOCLING_PARAMS=getattr(request.app.state.config, "DOCLING_PARAMS", {}),
+        DATALAB_MARKER_API_KEY=getattr(
+            request.app.state.config, "DATALAB_MARKER_API_KEY", ""
+        ),
+        DATALAB_MARKER_API_BASE_URL=getattr(
+            request.app.state.config, "DATALAB_MARKER_API_BASE_URL", ""
+        ),
+        DATALAB_MARKER_ADDITIONAL_CONFIG=getattr(
+            request.app.state.config, "DATALAB_MARKER_ADDITIONAL_CONFIG", ""
+        ),
+        DATALAB_MARKER_USE_LLM=getattr(
+            request.app.state.config, "DATALAB_MARKER_USE_LLM", False
+        ),
+        DATALAB_MARKER_SKIP_CACHE=getattr(
+            request.app.state.config, "DATALAB_MARKER_SKIP_CACHE", False
+        ),
+        DATALAB_MARKER_FORCE_OCR=getattr(
+            request.app.state.config, "DATALAB_MARKER_FORCE_OCR", False
+        ),
+        DATALAB_MARKER_PAGINATE=getattr(
+            request.app.state.config, "DATALAB_MARKER_PAGINATE", False
+        ),
+        DATALAB_MARKER_STRIP_EXISTING_OCR=getattr(
+            request.app.state.config, "DATALAB_MARKER_STRIP_EXISTING_OCR", False
+        ),
+        DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION=getattr(
+            request.app.state.config, "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION", False
+        ),
+        DATALAB_MARKER_FORMAT_LINES=getattr(
+            request.app.state.config, "DATALAB_MARKER_FORMAT_LINES", False
+        ),
+        DATALAB_MARKER_OUTPUT_FORMAT=getattr(
+            request.app.state.config, "DATALAB_MARKER_OUTPUT_FORMAT", "markdown"
+        ),
         PDF_EXTRACT_IMAGES=request.app.state.config.PDF_EXTRACT_IMAGES,
+        PDF_LOADING_MODE=getattr(request.app.state.config, "PDF_LOADING_MODE", ""),
+        PDF_LOADER_MODE=getattr(request.app.state.config, "PDF_LOADING_MODE", "page"),
         DOCUMENT_INTELLIGENCE_ENDPOINT=provider_config.get("endpoint")
         or request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT,
         DOCUMENT_INTELLIGENCE_KEY=provider_config.get("key")
         or request.app.state.config.DOCUMENT_INTELLIGENCE_KEY,
+        DOCUMENT_INTELLIGENCE_MODEL=getattr(
+            request.app.state.config, "DOCUMENT_INTELLIGENCE_MODEL", "prebuilt-layout"
+        ),
+        MINERU_API_MODE=getattr(request.app.state.config, "MINERU_API_MODE", "local"),
+        MINERU_API_URL=getattr(
+            request.app.state.config, "MINERU_API_URL", "http://localhost:8000"
+        ),
+        MINERU_API_KEY=getattr(request.app.state.config, "MINERU_API_KEY", ""),
+        MINERU_API_TIMEOUT=getattr(request.app.state.config, "MINERU_API_TIMEOUT", "300"),
+        MINERU_PARAMS=getattr(request.app.state.config, "MINERU_PARAMS", {}),
+        MISTRAL_OCR_API_BASE_URL=getattr(
+            request.app.state.config, "MISTRAL_OCR_API_BASE_URL", "https://api.mistral.ai/v1"
+        ),
         MISTRAL_OCR_API_KEY=provider_config.get("api_key")
         or request.app.state.config.MISTRAL_OCR_API_KEY,
     )
@@ -854,6 +911,11 @@ def _extract_docs_with_provider(
             or request.app.state.config.MISTRAL_OCR_API_KEY,
             file_path=file_path,
             mime_type=file_obj.meta.get("content_type"),
+            base_url=getattr(
+                request.app.state.config,
+                "MISTRAL_OCR_API_BASE_URL",
+                "https://api.mistral.ai/v1",
+            ),
         )
         docs = loader.load()
         docs = _merge_pdf_single_mode(request, file_obj, docs)

@@ -59,6 +59,7 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
+    merge_additive_payload_fields,
 )
 from open_webui.utils.error_handling import build_error_detail
 
@@ -2023,6 +2024,7 @@ async def generate_chat_completion(
         bypass_filter = True
 
     payload = {**form_data}
+    custom_params = payload.pop("custom_params", None)
     metadata = payload.pop("metadata", None) or {}
 
     model_id = payload.get("model", "")
@@ -2223,6 +2225,11 @@ async def generate_chat_completion(
     # configured per connection as JSON in `anthropic_extra_body`.
     anthropic_payload = _merge_extra_body_into_payload(
         anthropic_payload, api_config.get("anthropic_extra_body")
+    )
+    anthropic_payload = merge_additive_payload_fields(
+        anthropic_payload,
+        custom_params,
+        forbidden_keys=_EXTRA_BODY_FORBIDDEN_KEYS,
     )
     anthropic_payload, thinking_budget, thinking_enabled = _normalize_final_anthropic_payload(
         anthropic_payload, model_profile

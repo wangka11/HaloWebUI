@@ -43,6 +43,7 @@ from open_webui.utils.access_control import has_access
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
+    merge_additive_payload_fields,
 )
 from open_webui.utils.error_handling import build_error_detail
 from open_webui.utils.native_web_search import (
@@ -53,6 +54,8 @@ from open_webui.utils.native_web_search import (
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
+
+_CUSTOM_PARAM_FORBIDDEN_KEYS = {"contents"}
 
 
 def _stringify_gemini_error_body(body) -> str:
@@ -1558,6 +1561,7 @@ async def generate_chat_completion(
         bypass_filter = True
 
     payload = {**form_data}
+    custom_params = payload.pop("custom_params", None)
     metadata = payload.pop("metadata", None)
 
     model_id = payload.get("model", "")
@@ -2088,6 +2092,12 @@ async def generate_chat_completion(
     for i, item in enumerate(gemini_payload.get("contents", [])):
         log.info(f"[GEMINI PAYLOAD DEBUG] Content {i}: role={item.get('role')}, parts_count={len(item.get('parts', []))}, parts_types={[list(p.keys()) for p in item.get('parts', [])]}")
     log.info(f"[GEMINI PAYLOAD DEBUG] Complete contents array: {json.dumps(gemini_payload.get('contents', []), ensure_ascii=False, default=str)[:2000]}")
+
+    gemini_payload = merge_additive_payload_fields(
+        gemini_payload,
+        custom_params,
+        forbidden_keys=_CUSTOM_PARAM_FORBIDDEN_KEYS,
+    )
 
     # Remove empty generationConfig to avoid potential issues
     if "generationConfig" in gemini_payload and not gemini_payload["generationConfig"]:

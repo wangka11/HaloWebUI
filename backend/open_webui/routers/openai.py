@@ -45,6 +45,7 @@ from open_webui.env import ENV, SRC_LOG_LEVELS
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
+    merge_additive_payload_fields,
 )
 from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
@@ -85,6 +86,7 @@ NATIVE_FILE_INPUT_STATUS_UPSTREAM_REJECTED = "upstream_rejected"
 
 _NATIVE_FILE_INPUT_PROBE_TTL_SECONDS = 60
 _NATIVE_FILE_INPUT_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CUSTOM_PARAM_FORBIDDEN_KEYS = {"model", "messages", "input", "stream"}
 
 
 def _is_official_openai_connection(url: str) -> bool:
@@ -2315,6 +2317,7 @@ async def generate_chat_completion(
     idx = 0
 
     payload = {**form_data}
+    custom_params = payload.pop("custom_params", None)
     metadata = payload.pop("metadata", None)
 
     model_id = form_data.get("model")
@@ -2431,6 +2434,12 @@ async def generate_chat_completion(
             )
 
         payload_dict = payload
+
+    payload_dict = merge_additive_payload_fields(
+        payload_dict,
+        custom_params,
+        forbidden_keys=_CUSTOM_PARAM_FORBIDDEN_KEYS,
+    )
 
     request_attempts = (
         [(request_url, payload_dict)]

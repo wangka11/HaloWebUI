@@ -70,7 +70,7 @@
 
 	// ==================== Native Features 配置 ====================
 	const defaultNativeToolsConfig = {
-		TOOL_CALLING_MODE: 'default', // 'default' | 'native'
+		TOOL_CALLING_MODE: 'default', // 'default' | 'native' | 'off'
 		ENABLE_INTERLEAVED_THINKING: false,
 		MAX_TOOL_CALL_ROUNDS: DEFAULT_MAX_TOOL_CALL_ROUNDS,
 
@@ -100,7 +100,9 @@
 		...cloneSettingsSnapshot(defaultNativeToolsConfig),
 		...(value ?? {}),
 		TOOL_CALLING_MODE:
-			value?.TOOL_CALLING_MODE === 'native' || value?.TOOL_CALLING_MODE === 'default'
+			value?.TOOL_CALLING_MODE === 'native' ||
+			value?.TOOL_CALLING_MODE === 'default' ||
+			value?.TOOL_CALLING_MODE === 'off'
 				? value.TOOL_CALLING_MODE
 				: defaultNativeToolsConfig.TOOL_CALLING_MODE,
 		ENABLE_INTERLEAVED_THINKING: Boolean(value?.ENABLE_INTERLEAVED_THINKING),
@@ -746,21 +748,24 @@
 							class="glass-item p-4"
 						>
 							<div class="flex items-center justify-between mb-2.5">
-								<div class="text-sm font-medium">{$i18n.t('工具调用模式')}</div>
+								<div class="text-sm font-medium">{$i18n.t('Tool Calling Mode')}</div>
 								<HaloSelect
 									bind:value={nativeToolsConfig.TOOL_CALLING_MODE}
 									options={[
-										{ value: 'default', label: $i18n.t('默认') },
-										{ value: 'native', label: $i18n.t('原生') }
+										{ value: 'default', label: $i18n.t('Compatibility') },
+										{ value: 'native', label: $i18n.t('Native') },
+										{ value: 'off', label: $i18n.t('Off') }
 									]}
 									className="w-fit text-right"
 								/>
 							</div>
 							<div class="text-xs text-gray-500 dark:text-gray-400">
 								{#if nativeToolsConfig.TOOL_CALLING_MODE === 'default'}
-									{$i18n.t('使用基于提示词的逻辑，几乎兼容所有模型，但可能较慢。')}
+									{$i18n.t('Compatibility mode uses prompt-based tool orchestration, works with a wider range of models, but may be slower.')}
+								{:else if nativeToolsConfig.TOOL_CALLING_MODE === 'off'}
+									{$i18n.t('Off mode disables tool calling while keeping your selected MCP / OpenAPI tools configured.')}
 								{:else}
-									{$i18n.t('使用内置工具调用实现更快、更可靠的多步骤操作。需要高质量模型。')}
+									{$i18n.t("Native mode uses the model's built-in tool-calling capabilities for faster, more reliable multi-step operations. Requires a strong tool-capable model.")}
 								{/if}
 							</div>
 						</div>

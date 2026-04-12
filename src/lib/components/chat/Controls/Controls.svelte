@@ -26,7 +26,7 @@
 	export let params: Record<string, any> = {};
 	export let currentValvesContext: { tab: 'tools' | 'functions'; id: string } | null = null;
 
-	type ToolCallingMode = 'default' | 'native';
+	type ToolCallingMode = 'default' | 'native' | 'off';
 	type SectionKey = 'system' | 'thinking' | 'advanced';
 
 	const FOLLOW_GLOBAL_TOOL_CALLING_MODE = true;
@@ -57,6 +57,7 @@
 		'use_mlock',
 		'num_thread',
 		'num_gpu',
+		'custom_params',
 		'template'
 	] as const;
 
@@ -84,7 +85,7 @@
 	};
 
 	const normalizeToolCallingMode = (value: unknown): ToolCallingMode | null => {
-		return value === 'default' || value === 'native' ? value : null;
+		return value === 'default' || value === 'native' || value === 'off' ? value : null;
 	};
 
 	const normalizeSystemValue = (value: unknown): string | null => {
@@ -816,6 +817,7 @@
 							admin={$user?.role === 'admin'}
 							globalToolCallingMode={$config?.tools?.calling_mode ?? null}
 							followGlobalToolCallingMode={FOLLOW_GLOBAL_TOOL_CALLING_MODE}
+							enableCustomParams={true}
 							bind:params
 							on:change={handleAdvancedParamsChange}
 							on:updateGlobalToolCallingMode={handleUpdateGlobalToolCallingMode}
