@@ -1,41 +1,72 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+
 	import type { HeadingItem } from '$lib/utils/headings';
+
+	const WAKE_HOT_EXIT_DELAY_MS = 40;
 
 	export let headings: HeadingItem[] = [];
 	export let visible = false;
 	export let onSelect: ((heading: HeadingItem) => void) | undefined = undefined;
 
-	let hitboxElement: HTMLDivElement | null = null;
-	let bodyElement: HTMLDivElement | null = null;
-	let isHitboxHovered = false;
-	let isBodyHovered = false;
+	let wakeHitboxElement: HTMLDivElement | null = null;
 	let hasFocusWithin = false;
+	let isWakeHot = false;
+	let isPanelHot = false;
+	let wakeHotExitTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$: minDepth = headings.length > 0 ? Math.min(...headings.map((h) => h.depth)) : 1;
-	$: isVisible = visible || isHitboxHovered || isBodyHovered || hasFocusWithin;
-	$: isExpanded = isBodyHovered || hasFocusWithin;
+	$: showBars = visible || isWakeHot || isPanelHot || hasFocusWithin;
+	$: expandPanel = isPanelHot || hasFocusWithin;
 
 	const barWidth = (depth: number) => Math.max(4, 16 - depth * 2);
 	const indent = (depth: number) => Math.max(0, depth - minDepth) * 10;
 	const fontSize = (depth: number) => Math.max(11, 14 - depth);
 
-	const containsTarget = (element: HTMLElement | null, target: EventTarget | null) =>
-		element && target instanceof Node ? element.contains(target) : false;
-
-	const handleHitboxMouseLeave = (event: MouseEvent) => {
-		if (containsTarget(bodyElement, event.relatedTarget)) {
-			return;
+	const clearWakeHotExitTimer = () => {
+		if (wakeHotExitTimer) {
+			clearTimeout(wakeHotExitTimer);
+			wakeHotExitTimer = null;
 		}
-
-		isHitboxHovered = false;
 	};
 
-	const handleBodyMouseLeave = (event: MouseEvent) => {
-		isBodyHovered = false;
+	const scheduleWakeHotExit = () => {
+		clearWakeHotExitTimer();
+		wakeHotExitTimer = setTimeout(() => {
+			if (!isPanelHot && !hasFocusWithin) {
+				isWakeHot = false;
+			}
+			wakeHotExitTimer = null;
+		}, WAKE_HOT_EXIT_DELAY_MS);
+	};
 
-		if (containsTarget(hitboxElement, event.relatedTarget)) {
-			isHitboxHovered = true;
+	const handleWakeHitboxEnter = () => {
+		clearWakeHotExitTimer();
+		isWakeHot = true;
+	};
+
+	const handleWakeHitboxLeave = () => {
+		scheduleWakeHotExit();
+	};
+
+	const handlePanelEnter = () => {
+		clearWakeHotExitTimer();
+		isWakeHot = false;
+		isPanelHot = true;
+	};
+
+	const handlePanelLeave = (event: PointerEvent) => {
+		isPanelHot = false;
+
+		if (wakeHitboxElement && event.relatedTarget === wakeHitboxElement) {
+			isWakeHot = true;
 		}
+	};
+
+	const handleFocusIn = () => {
+		clearWakeHotExitTimer();
+		isWakeHot = false;
+		hasFocusWithin = true;
 	};
 
 	const handleFocusOut = (event: FocusEvent) => {
@@ -48,35 +79,33 @@
 
 		hasFocusWithin = false;
 	};
+
+	onDestroy(() => {
+		clearWakeHotExitTimer();
+	});
 </script>
 
 <div class="message-outline-root">
 	<div
-		class="message-outline-track"
+		class="message-outline-shell"
 		style="--outline-count:{headings.length}"
 	>
 		<div
 			class="message-outline-hitbox"
-			bind:this={hitboxElement}
-			on:mouseenter={() => {
-				isHitboxHovered = true;
-			}}
-			on:mouseleave={handleHitboxMouseLeave}
-		/>
+			bind:this={wakeHitboxElement}
+			aria-hidden="true"
+			on:pointerenter={handleWakeHitboxEnter}
+			on:pointerleave={handleWakeHitboxLeave}
+		></div>
+
 		<div
-			class="message-outline-body"
-			class:message-outline-body-visible={isVisible}
-			class:message-outline-body-expanded={isExpanded}
-			style="--outline-count:{headings.length}"
-			bind:this={bodyElement}
-			aria-hidden={!isVisible}
-			on:mouseenter={() => {
-				isBodyHovered = true;
-			}}
-			on:mouseleave={handleBodyMouseLeave}
-			on:focusin={() => {
-				hasFocusWithin = true;
-			}}
+			class="message-outline-panel"
+			class:message-outline-panel-visible={showBars}
+			class:message-outline-panel-expanded={expandPanel}
+			aria-hidden={!showBars}
+			on:pointerenter={handlePanelEnter}
+			on:pointerleave={handlePanelLeave}
+			on:focusin={handleFocusIn}
 			on:focusout={handleFocusOut}
 		>
 			{#each headings as heading (heading.id)}
@@ -84,14 +113,14 @@
 					type="button"
 					class="message-outline-item"
 					title={heading.text}
-					tabindex={isVisible ? 0 : -1}
+					tabindex={showBars ? 0 : -1}
 					on:click={() => onSelect?.(heading)}
 				>
 					<span
 						class="message-outline-bar"
 						style="--bar-w:{barWidth(heading.depth)}px"
 						aria-hidden="true"
-					/>
+					></span>
 					<span
 						class="message-outline-label"
 						style="--indent:{indent(heading.depth)}px; --font-size:{fontSize(heading.depth)}px"
@@ -112,24 +141,26 @@
 		pointer-events: none;
 	}
 
-	.message-outline-track {
+	.message-outline-shell {
 		position: sticky;
 		top: max(calc(50% - var(--outline-count) * 14px), 20px);
-		display: inline-flex;
-		margin-left: -18px;
-		max-width: calc(50% + 18px);
+		display: grid;
+		grid-template-columns: 18px auto;
+		align-items: stretch;
+		width: fit-content;
+		margin-inline-start: calc(var(--message-outline-gutter, 24px) * -1);
+		max-width: calc(50% + var(--message-outline-gutter, 24px));
 		pointer-events: none;
 	}
 
 	.message-outline-hitbox {
-		width: 18px;
-		height: min(calc(var(--outline-count) * 28px + 12px), 70vh);
-		min-height: 40px;
+		grid-column: 1;
 		pointer-events: auto;
 	}
 
-	.message-outline-body {
-		max-width: calc(100% - 18px);
+	.message-outline-panel {
+		grid-column: 2;
+		max-width: 100%;
 		max-height: min(100%, 70vh);
 		display: inline-flex;
 		flex-direction: column;
@@ -149,29 +180,29 @@
 			box-shadow 200ms ease;
 	}
 
-	.message-outline-body-visible {
+	.message-outline-panel-visible {
 		opacity: 1;
 		transform: translateX(0);
 		pointer-events: auto;
 	}
 
-	.message-outline-body-expanded {
+	.message-outline-panel-expanded {
 		padding: 8px 12px 8px 8px;
 		overflow-y: auto;
 		background: rgba(255, 255, 255, 0.95);
 		box-shadow: 0 0 12px rgba(0, 0, 0, 0.08);
 	}
 
-	:global(.dark) .message-outline-body-expanded {
+	:global(.dark) .message-outline-panel-expanded {
 		background: rgba(30, 41, 59, 0.95);
 		box-shadow: 0 0 12px rgba(0, 0, 0, 0.3);
 	}
 
-	/* scrollbar hidden */
-	.message-outline-body::-webkit-scrollbar {
+	.message-outline-panel::-webkit-scrollbar {
 		display: none;
 	}
-	.message-outline-body {
+
+	.message-outline-panel {
 		scrollbar-width: none;
 	}
 
@@ -235,19 +266,19 @@
 		color: rgb(148 163 184);
 	}
 
-	.message-outline-body-expanded .message-outline-label {
+	.message-outline-panel-expanded .message-outline-label {
 		opacity: 1;
 		display: block;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.message-outline-body,
+		.message-outline-panel,
 		.message-outline-bar,
 		.message-outline-label {
 			transition: none;
 		}
 
-		.message-outline-body {
+		.message-outline-panel {
 			transform: none;
 		}
 	}

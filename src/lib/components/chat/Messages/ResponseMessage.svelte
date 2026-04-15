@@ -82,7 +82,7 @@
 	import type { HeadingItem } from '$lib/utils/headings';
 
 	type MessageOutlineVisibilityContext = {
-		visibleStore: Writable<boolean>;
+		scrollVisibleStore: Writable<boolean>;
 		reveal: () => void;
 	};
 
@@ -296,13 +296,28 @@
 	let editTextAreaElement: HTMLTextAreaElement;
 	let contentRendererRef: any = null;
 	let messageHeadings: HeadingItem[] = [];
-	const fallbackMessageOutlineVisibleStore = writable(false);
+	let isOutlineHostPointerActive = false;
+	let hasOutlineHostFocusWithin = false;
+	let isOutlineHostActive = false;
+	const fallbackOutlineScrollVisibleStore = writable(false);
 	const messageOutlineVisibilityContext =
 		getContext<MessageOutlineVisibilityContext | undefined>('messageOutlineVisibility');
-	const messageOutlineVisibleStore =
-		messageOutlineVisibilityContext?.visibleStore ?? fallbackMessageOutlineVisibleStore;
+	const outlineScrollVisibleStore =
+		messageOutlineVisibilityContext?.scrollVisibleStore ?? fallbackOutlineScrollVisibleStore;
+	$: isOutlineHostActive = isOutlineHostPointerActive || hasOutlineHostFocusWithin;
 	$: canShowMessageOutline =
 		!edit && !$mobile && ($settings?.showMessageOutline ?? true) && messageHeadings.length >= 1;
+
+	const handleOutlineHostFocusOut = (event: FocusEvent) => {
+		const currentTarget = event.currentTarget as HTMLElement | null;
+		const relatedTarget = event.relatedTarget as Node | null;
+
+		if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+			return;
+		}
+
+		hasOutlineHostFocusWithin = false;
+	};
 
 	let messageIndexEdit = false;
 
@@ -1052,11 +1067,21 @@
 								class="relative min-w-0 flex-1 overflow-visible message-outline-host {canShowMessageOutline
 									? 'message-outline-host-active'
 									: ''}"
+								on:pointerenter={() => {
+									isOutlineHostPointerActive = true;
+								}}
+								on:pointerleave={() => {
+									isOutlineHostPointerActive = false;
+								}}
+								on:focusin={() => {
+									hasOutlineHostFocusWithin = true;
+								}}
+								on:focusout={handleOutlineHostFocusOut}
 							>
 								{#if canShowMessageOutline}
 									<MessageOutline
 										headings={messageHeadings}
-										visible={$messageOutlineVisibleStore}
+										visible={$outlineScrollVisibleStore && isOutlineHostActive}
 										onSelect={(heading) => {
 											messageOutlineVisibilityContext?.reveal?.();
 											contentRendererRef?.scrollToHeading?.(heading.id);

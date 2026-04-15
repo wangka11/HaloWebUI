@@ -141,7 +141,7 @@
 	]);
 
 	type MessageOutlineVisibilityContext = {
-		visibleStore: Writable<boolean>;
+		scrollVisibleStore: Writable<boolean>;
 		reveal: () => void;
 	};
 
@@ -1231,7 +1231,7 @@
 	};
 
 	setContext<MessageOutlineVisibilityContext>('messageOutlineVisibility', {
-		visibleStore: messageOutlineVisibleStore,
+		scrollVisibleStore: messageOutlineVisibleStore,
 		reveal: revealMessageOutline
 	});
 
