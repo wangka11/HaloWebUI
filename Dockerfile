@@ -21,6 +21,10 @@ ARG USE_TIKTOKEN_ENCODING_NAME="cl100k_base"
 
 ARG BUILD_HASH=dev-build
 ARG HALO_RUNTIME_PROFILE=main
+ARG BACKEND_BUILDER_MAIN_BASE_SOURCE=backend-builder-main-base-local
+ARG BACKEND_BUILDER_SLIM_BASE_SOURCE=backend-builder-slim-base-local
+ARG RUNTIME_MAIN_BASE_SOURCE=runtime-main-base-local
+ARG RUNTIME_SLIM_BASE_SOURCE=runtime-slim-base-local
 # Override at your own risk - non-root configurations are untested
 ARG UID=0
 ARG GID=0
@@ -52,8 +56,8 @@ ENV APP_BUILD_HASH=${BUILD_HASH} \
 
 RUN npm run build
 
-######## WebUI backend builder ########
-FROM python:3.11-slim-bookworm AS backend-builder
+######## WebUI backend builder base (local fallback) ########
+FROM python:3.11-slim-bookworm AS backend-builder-system-base-local
 
 ARG USE_CUDA
 ARG INSTALL_PROFILE
@@ -62,7 +66,6 @@ ARG USE_CUDA_VER
 ARG USE_EMBEDDING_MODEL
 ARG USE_RERANKING_MODEL
 ARG USE_TIKTOKEN_ENCODING_NAME
-ARG HALO_RUNTIME_PROFILE
 
 ENV USE_CUDA_DOCKER=${USE_CUDA} \
     USE_CUDA_DOCKER_VER=${USE_CUDA_VER} \
@@ -88,23 +91,49 @@ RUN python -m venv /opt/venv
 
 COPY ./backend/requirements ./requirements
 
+RUN pip install --no-cache-dir --upgrade pip
+
+FROM backend-builder-system-base-local AS backend-builder-main-base-local
+RUN pip install --no-cache-dir -r requirements/core.txt \
+    && pip install --no-cache-dir -r requirements/storage-s3.txt \
+    && pip install --no-cache-dir uv
+
+FROM backend-builder-system-base-local AS backend-builder-slim-base-local
+RUN pip install --no-cache-dir -r requirements/core.txt
+
+FROM ${BACKEND_BUILDER_MAIN_BASE_SOURCE} AS backend-builder-main-base
+FROM ${BACKEND_BUILDER_SLIM_BASE_SOURCE} AS backend-builder-slim-base
+
+######## WebUI backend builder ########
+FROM backend-builder-${HALO_RUNTIME_PROFILE}-base AS backend-builder
+
+ARG USE_CUDA
+ARG INSTALL_PROFILE
+ARG PRELOAD_LOCAL_MODELS
+ARG USE_CUDA_VER
+ARG USE_EMBEDDING_MODEL
+ARG USE_RERANKING_MODEL
+ARG USE_TIKTOKEN_ENCODING_NAME
+ARG HALO_RUNTIME_PROFILE
+
+COPY ./backend/requirements ./requirements
+
 RUN set -eux; \
     requirements_file="requirements/${INSTALL_PROFILE}.txt"; \
     test -f "${requirements_file}"; \
-    pip install --no-cache-dir --upgrade pip; \
-    if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
-        if [ "$USE_CUDA" = "true" ]; then \
-            pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${USE_CUDA_DOCKER_VER}" --no-cache-dir; \
-        else \
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \
+    if [ "$INSTALL_PROFILE" != "core" ]; then \
+        if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
+            if [ "$USE_CUDA" = "true" ]; then \
+                pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${USE_CUDA_DOCKER_VER}" --no-cache-dir; \
+            else \
+                pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \
+            fi; \
         fi; \
-    fi; \
-    pip install --no-cache-dir -r "${requirements_file}"; \
-    if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
-        pip install --no-cache-dir -r requirements/storage-s3.txt; \
-    fi; \
-    if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
-        pip install --no-cache-dir uv; \
+        pip install --no-cache-dir -r "${requirements_file}"; \
+        if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
+            pip install --no-cache-dir -r requirements/storage-s3.txt; \
+            pip install --no-cache-dir uv; \
+        fi; \
     fi; \
     if [ "$PRELOAD_LOCAL_MODELS" = "true" ]; then \
         if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
@@ -116,8 +145,40 @@ RUN set -eux; \
         python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
     fi
 
+######## WebUI runtime base (local fallback) ########
+FROM python:3.11-slim-bookworm AS runtime-common-base-local
+
+ARG HALO_PG_CLIENT_MAJORS
+
+RUN set -eux; \
+    pg_client_packages=""; \
+    for major in ${HALO_PG_CLIENT_MAJORS}; do \
+        pg_client_packages="${pg_client_packages} postgresql-client-${major}"; \
+    done; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates; \
+    install -d /usr/share/postgresql-common/pgdg; \
+    curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${pg_client_packages}; \
+    rm -rf /var/lib/apt/lists/*
+
+FROM runtime-common-base-local AS runtime-main-base-local
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm git \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM runtime-common-base-local AS runtime-slim-base-local
+
+FROM ${RUNTIME_MAIN_BASE_SOURCE} AS runtime-main-base
+FROM ${RUNTIME_SLIM_BASE_SOURCE} AS runtime-slim-base
+
 ######## WebUI backend runtime ########
-FROM python:3.11-slim-bookworm AS base
+FROM runtime-${HALO_RUNTIME_PROFILE}-base AS base
 
 ARG USE_CUDA
 ARG USE_OLLAMA
@@ -127,7 +188,6 @@ ARG USE_CUDA_VER
 ARG USE_EMBEDDING_MODEL
 ARG USE_RERANKING_MODEL
 ARG USE_TIKTOKEN_ENCODING_NAME
-ARG HALO_PG_CLIENT_MAJORS
 ARG UID
 ARG GID
 ARG HALO_RUNTIME_PROFILE
@@ -170,34 +230,18 @@ RUN if [ $UID -ne 0 ]; then \
 
 RUN set -eux; \
     extra_apt_packages=""; \
-    pg_client_packages=""; \
     case "$INSTALL_PROFILE" in \
         local-audio) extra_apt_packages="ffmpeg libsm6 libxext6" ;; \
         docs-full|full) extra_apt_packages="pandoc ffmpeg libsm6 libxext6" ;; \
     esac; \
-    for major in ${HALO_PG_CLIENT_MAJORS}; do \
-        pg_client_packages="${pg_client_packages} postgresql-client-${major}"; \
-    done; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        ${extra_apt_packages}; \
-    install -d /usr/share/postgresql-common/pgdg; \
-    curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
-        https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
-    . /etc/os-release; \
-    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
-        > /etc/apt/sources.list.d/pgdg.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ${pg_client_packages}; \
-    if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
-        apt-get install -y --no-install-recommends nodejs npm git; \
+    if [ -n "$extra_apt_packages" ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends ${extra_apt_packages}; \
+        rm -rf /var/lib/apt/lists/*; \
     fi; \
     if [ "$USE_OLLAMA" = "true" ]; then \
         curl -fsSL https://ollama.com/install.sh | sh; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+    fi
 
 RUN mkdir -p "$HOME/.cache/chroma" /app/backend/data
 RUN echo -n 00000000-0000-0000-0000-000000000000 > "$HOME/.cache/chroma/telemetry_user_id"
