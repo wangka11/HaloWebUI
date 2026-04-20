@@ -79,6 +79,25 @@ describe('file upload errors', () => {
 		expect(message).toContain('administrator');
 	});
 
+	it('localizes document provider fallback diagnostics', () => {
+		const localized = getLocalizedFileUploadDiagnostic(
+			{
+				diagnostic: {
+					code: 'document_provider_fallback_failed',
+					title: 'ignored',
+					message: 'ignored',
+					hint: 'ignored',
+					blocking: true
+				}
+			},
+			t
+		);
+
+		expect(localized.title).toBe('Document parsing failed');
+		expect(localized.message).toContain('backup parser');
+		expect(localized.hint).toContain('API keys');
+	});
+
 	it('falls back to encoding detection localization for legacy string errors', () => {
 		const message = localizeFileUploadError('Could not detect encoding for demo.rar', t);
 

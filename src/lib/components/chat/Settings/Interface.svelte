@@ -14,6 +14,7 @@
 		normalizeWebSearchMode,
 		type WebSearchMode
 	} from '$lib/utils/web-search-mode';
+	import { translateWithDefault } from '$lib/i18n';
 	import {
 		buildWebSearchModeOptions,
 		getNativeWebSearchAvailabilityNote,
@@ -22,6 +23,8 @@
 	const dispatch = createEventDispatcher();
 
 	const i18n = getContext('i18n');
+	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
+		translateWithDefault($i18n, key, defaultValue, options);
 
 	export let saveSettings: Function;
 
@@ -60,6 +63,7 @@
 
 	let collapseCodeBlocks = false;
 	let collapseHistoricalLongResponses = true;
+	let showInlineCitations = true;
 	let showMessageOutline = true;
 	let expandDetails = false;
 
@@ -100,6 +104,11 @@
 	const toggleShowMessageOutline = () => {
 		showMessageOutline = !showMessageOutline;
 		saveSettings({ showMessageOutline });
+	};
+
+	const toggleShowInlineCitations = () => {
+		showInlineCitations = !showInlineCitations;
+		saveSettings({ showInlineCitations });
 	};
 
 	const toggleSplitLargeChunks = async () => {
@@ -341,6 +350,7 @@
 
 		collapseCodeBlocks = $settings.collapseCodeBlocks ?? false;
 		collapseHistoricalLongResponses = $settings.collapseHistoricalLongResponses ?? true;
+		showInlineCitations = $settings.showInlineCitations ?? true;
 		showMessageOutline = $settings.showMessageOutline ?? true;
 		expandDetails = $settings.expandDetails ?? false;
 
@@ -829,6 +839,26 @@
 						type="button"
 					>
 						{#if showMessageOutline === true}
+							<span class="ml-2 self-center">{$i18n.t('On')}</span>
+						{:else}
+							<span class="ml-2 self-center">{$i18n.t('Off')}</span>
+						{/if}
+					</button>
+				</div>
+			</div>
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div class=" self-center text-xs">{tr('显示正文引用标签', 'Show Inline Citations')}</div>
+
+					<button
+						class="p-1 px-3 text-xs flex rounded-sm transition"
+						on:click={() => {
+							toggleShowInlineCitations();
+						}}
+						type="button"
+					>
+						{#if showInlineCitations === true}
 							<span class="ml-2 self-center">{$i18n.t('On')}</span>
 						{:else}
 							<span class="ml-2 self-center">{$i18n.t('Off')}</span>

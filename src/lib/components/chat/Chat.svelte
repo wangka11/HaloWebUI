@@ -16,6 +16,8 @@
 
 	import {
 		chatId,
+		chatListRefreshRevision,
+		chatListRefreshTarget,
 		chats,
 		config,
 		type Model,
@@ -86,6 +88,7 @@
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
 		addTagById,
+		branchChatById,
 		createNewChat,
 		deleteTagById,
 		deleteTagsById,
@@ -588,6 +591,7 @@
 
 	let taskIds = null;
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+	let branchingMessageId: string | null = null;
 
 	// Temporary instruction for regeneration with modifications (e.g. "more concise")
 	let _pendingInstruction: string | null = null;
@@ -1787,7 +1791,7 @@
 		setToolIds();
 	}
 
-	$: if ($skillsStore && (atSelectedModel || selectedModels)) {
+	$: if ($user && $skillsStore && (atSelectedModel || selectedModels)) {
 		setSkillIds();
 	}
 
@@ -1820,14 +1824,20 @@
 	};
 
 	let isLoadingSkills = false;
+	let hasResolvedSkills = false;
 	const setSkillIds = async () => {
-		if (!$skillsStore || $skillsStore.length === 0) {
+		if (!$user || !localStorage.token) {
+			return;
+		}
+
+		if (!hasResolvedSkills && (!$skillsStore || $skillsStore.length === 0)) {
 			if (isLoadingSkills) {
 				return;
 			}
 			isLoadingSkills = true;
 			try {
-				const latestSkills = (await getSkills(localStorage.token).catch(() => [])) ?? [];
+				const latestSkills = (await getSkills(localStorage.token).catch(() => null)) ?? [];
+				hasResolvedSkills = true;
 				// 关键：仅在内容真正变化时 set，避免写入新数组引用触发响应式循环
 				const current = $skillsStore ?? [];
 				const changed =
@@ -3374,6 +3384,87 @@
 		}, 1000);
 	};
 
+	const resolveBranchPointMessageId = (sourceMessageId: string): string | null => {
+		const sourceMessage = history.messages?.[sourceMessageId];
+		if (!sourceMessage) {
+			return null;
+		}
+
+		if (sourceMessage.role === 'assistant') {
+			return sourceMessageId;
+		}
+
+		const currentPath = createMessagesList(history, history.currentId);
+		const sourceIndex = currentPath.findIndex((message) => message.id === sourceMessageId);
+		const nextMessage = sourceIndex >= 0 ? currentPath[sourceIndex + 1] : null;
+
+		if (
+			nextMessage?.role === 'assistant' &&
+			nextMessage?.parentId === sourceMessageId &&
+			nextMessage?.done === true
+		) {
+			return nextMessage.id;
+		}
+
+		return sourceMessageId;
+	};
+
+	const branchMessageToCurrentChat = async (sourceMessageId: string) => {
+		if (
+			!sourceMessageId ||
+			branchingMessageId !== null ||
+			!$chatId ||
+			$chatId === 'local' ||
+			$temporaryChatEnabled
+		) {
+			return;
+		}
+
+		const branchPointMessageId = resolveBranchPointMessageId(sourceMessageId);
+		if (!branchPointMessageId) {
+			toast.error($i18n.t('Failed to create branch'));
+			return;
+		}
+
+		branchingMessageId = sourceMessageId;
+
+		try {
+			const branchedChat = await branchChatById(
+				localStorage.token,
+				$chatId,
+				branchPointMessageId
+			);
+
+			if (!branchedChat?.id) {
+				throw new Error($i18n.t('Failed to create branch'));
+			}
+
+			const targetUrl = `/c/${branchedChat.id}`;
+			chatTitle.set(branchedChat.title);
+			chatId.set(branchedChat.id);
+			chatListRefreshTarget.set({
+				id: branchedChat.id,
+				title: branchedChat.title,
+				updated_at: branchedChat.updated_at,
+				created_at: branchedChat.created_at,
+				assistant_id: branchedChat.assistant_id ?? null
+			});
+			chatListRefreshRevision.update((value) => value + 1);
+			await goto(targetUrl);
+			toast.success($i18n.t('Switched to new branch'));
+		} catch (error) {
+			toast.error(
+				typeof error === 'string' && error
+					? error
+					: error instanceof Error && error.message
+						? error.message
+						: $i18n.t('Failed to create branch')
+			);
+		} finally {
+			branchingMessageId = null;
+		}
+	};
+
 	const createMessagePair = async (userPrompt) => {
 		prompt = '';
 		if (selectedModels.length === 0) {
@@ -4877,6 +4968,9 @@
 									{mergeResponses}
 									{chatActionHandler}
 									{addMessages}
+									onBranchMessage={branchMessageToCurrentChat}
+									{branchingMessageId}
+									branchSupported={Boolean($chatId && $chatId !== 'local' && !$temporaryChatEnabled)}
 									bottomPadding={files.length > 0}
 								/>
 								<div bind:this={scrollSentinel} class="h-px w-full shrink-0" />

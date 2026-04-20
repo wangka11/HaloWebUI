@@ -39,6 +39,7 @@
 	} from '$lib/utils';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { translateWithDefault } from '$lib/i18n';
+	import { saveUserSettingsPatch } from '$lib/utils/user-settings';
 
 	import Name from './Name.svelte';
 	import ModelIcon from '$lib/components/common/ModelIcon.svelte';
@@ -53,6 +54,7 @@
 		ChevronRight,
 		PencilLine,
 		Copy,
+		GitBranchPlus,
 		Volume2,
 		VolumeX,
 		ImagePlus,
@@ -61,6 +63,8 @@
 		RefreshCw,
 		Trash2,
 		ListPlus,
+		Eye,
+		EyeOff,
 		AlignLeft,
 		Lightbulb,
 		Globe,
@@ -202,6 +206,9 @@
 	export let regenerateResponse: Function;
 
 	export let addMessages: Function;
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 
 	export let isLastMessage = true;
 	export let readOnly = false;
@@ -209,6 +216,14 @@
 	let buttonsContainerElement: HTMLDivElement;
 	let citationsRef: any = null;
 	let buttonsScrollBound = false;
+	let isBranching = false;
+	let branchTooltip = '';
+
+	$: isBranching = branchingMessageId === message?.id;
+	$: branchTooltip = tr(
+		isBranching ? 'Creating branch...' : 'Create branch',
+		isBranching ? '正在创建分支...' : '创建分支'
+	);
 
 	function setupButtonsScroll() {
 		if (buttonsContainerElement && !buttonsScrollBound) {
@@ -229,6 +244,11 @@
 	let showRegenerateConfirm = false;
 	let showRegenerateMenu = false;
 	let regenerateInput = '';
+
+	type RenderedCopyPayload = {
+		text: string;
+		html?: string;
+	};
 
 	$: modelSupportsThinking = model?.info?.meta?.capabilities?.reasoning ?? false;
 
@@ -364,12 +384,54 @@
 		);
 	};
 
+	const writeRenderedCopyPayload = async (payload: RenderedCopyPayload) => {
+		if (($settings?.copyFormatted ?? false) && payload.html) {
+			try {
+				const data = new ClipboardItem({
+					'text/html': new Blob([payload.html], { type: 'text/html' }),
+					'text/plain': new Blob([payload.text], { type: 'text/plain' })
+				});
+				await navigator.clipboard.write([data]);
+				return true;
+			} catch (error) {
+				console.error('Failed to copy rendered HTML content:', error);
+			}
+		}
+
+		return await _copyToClipboard(payload.text, $settings?.copyFormatted ?? false);
+	};
+
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
 
-		const res = await _copyToClipboard(text, $settings?.copyFormatted ?? false);
+		const renderedPayload = contentRendererRef?.getCopyPayload?.();
+		const res = renderedPayload
+			? await writeRenderedCopyPayload(renderedPayload)
+			: await _copyToClipboard(text, $settings?.copyFormatted ?? false);
+
 		if (res) {
 			toast.success($i18n.t('Copying to clipboard was successful!'));
+		}
+	};
+
+	const toggleInlineCitations = async () => {
+		const nextValue = !($settings?.showInlineCitations ?? true);
+		const optimisticSettings = {
+			...($settings ?? {}),
+			showInlineCitations: nextValue
+		};
+
+		settings.set(optimisticSettings);
+
+		if (!localStorage?.token) {
+			return;
+		}
+
+		try {
+			await saveUserSettingsPatch(localStorage.token, { showInlineCitations: nextValue });
+		} catch (error) {
+			settings.set(optimisticSettings);
+			toast.error(tr('正文引用显示偏好保存失败', 'Failed to save inline citation preference.'));
 		}
 	};
 
@@ -1194,12 +1256,33 @@
 
 									<div class="message-outline-toolbar-row flex items-end mt-2 gap-3 flex-wrap">
 						{#if (message?.sources || message?.citations) && (model?.info?.meta?.capabilities?.citations ?? true)}
-							<div class="flex-shrink-0">
+							<div class="flex shrink-0 items-center gap-2">
 								<Citations
 									bind:this={citationsRef}
 									id={message?.id}
 									sources={message?.sources ?? message?.citations}
 								/>
+								<Tooltip
+									content={($settings?.showInlineCitations ?? true)
+										? tr('隐藏正文引用标签', 'Hide inline citations')
+										: tr('显示正文引用标签', 'Show inline citations')}
+									placement="bottom"
+								>
+									<button
+										type="button"
+										aria-label={($settings?.showInlineCitations ?? true)
+											? tr('隐藏正文引用标签', 'Hide inline citations')
+											: tr('显示正文引用标签', 'Show inline citations')}
+										class="text-gray-600 dark:text-gray-300 rounded-xl bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl shadow-sm hover:bg-white/80 dark:hover:bg-gray-700/60 transition-all duration-200 flex items-center justify-center border border-gray-200/50 dark:border-gray-700/50 h-[36px] w-[36px] shrink-0"
+										on:click={toggleInlineCitations}
+									>
+										{#if $settings?.showInlineCitations ?? true}
+											<EyeOff class="size-3.5 shrink-0" strokeWidth={2.25} />
+										{:else}
+											<Eye class="size-3.5 shrink-0" strokeWidth={2.25} />
+										{/if}
+									</button>
+								</Tooltip>
 							</div>
 						{/if}
 						{#if message.done || siblings.length > 1}
@@ -1313,6 +1396,26 @@
 											<Copy class="w-4 h-4" strokeWidth={2} />
 										</button>
 									</Tooltip>
+
+									{#if !readOnly && branchSupported}
+										<Tooltip content={branchTooltip} placement="bottom">
+											<button
+												class="{isLastMessage
+													? 'visible'
+													: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl dark:hover:text-white hover:text-black transition-all duration-200 hover:scale-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+												on:click={() => {
+													onBranchMessage(message.id);
+												}}
+												disabled={isBranching}
+												aria-busy={isBranching}
+											>
+												<GitBranchPlus
+													class={`w-4 h-4 ${isBranching ? 'animate-spin' : ''}`}
+													strokeWidth={2}
+												/>
+											</button>
+										</Tooltip>
+									{/if}
 
 									<!-- [REACTION_FEATURE] Commented out - reaction button disabled for now
 								{#if !readOnly}

@@ -45,6 +45,9 @@
 	export let showMessage: Function = () => {};
 	export let submitMessage: Function = () => {};
 	export let addMessages: Function = () => {};
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 
 	export let readOnly = false;
 	export let showAllMessages = false;
@@ -445,6 +448,9 @@
 							{continueResponse}
 							{mergeResponses}
 							{addMessages}
+							{onBranchMessage}
+							{branchingMessageId}
+							{branchSupported}
 							{triggerScroll}
 							{readOnly}
 						/>

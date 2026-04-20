@@ -40,6 +40,9 @@
 	export let mergeResponses: Function;
 
 	export let addMessages: Function;
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 
 	export let triggerScroll: Function;
 
@@ -332,6 +335,9 @@
 												groupedMessageIds[selectedModelIdx].messageIds.length - 1;
 										}}
 										{addMessages}
+										{onBranchMessage}
+										{branchingMessageId}
+										{branchSupported}
 										{readOnly}
 									/>
 								{/if}
@@ -383,6 +389,9 @@
 												groupedMessageIds[modelIdx].messageIds.length - 1;
 										}}
 										{addMessages}
+										{onBranchMessage}
+										{branchingMessageId}
+										{branchSupported}
 										{readOnly}
 									/>
 								{/if}

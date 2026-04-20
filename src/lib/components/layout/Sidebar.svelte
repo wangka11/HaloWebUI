@@ -4,6 +4,8 @@
 	import { page } from '$app/stores';
 	import {
 		user,
+		chatListRefreshTarget,
+		chatListRefreshRevision,
 		chats,
 		settings,
 		chatId,
@@ -38,6 +40,7 @@
 	} from '$lib/apis/chats';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { getModels as getWorkspaceModels } from '$lib/apis/models';
+	import { getTimeRange } from '$lib/utils';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 
 	import ArchivedChatsModal from './Sidebar/ArchivedChatsModal.svelte';
@@ -100,6 +103,7 @@
 			: 'flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition';
 
 	let navElement;
+	let sidebarScrollContainerElement: HTMLDivElement | null = null;
 	let search = '';
 
 	let shiftKey = false;
@@ -169,13 +173,16 @@
 		currentChatPage.set(1);
 		allChatsLoaded = false;
 
+		let nextChats = [];
 		if (!search && $selectedAssistantScene?.id) {
-			await chats.set(await getChatListByAssistantId(localStorage.token, $selectedAssistantScene.id));
+			nextChats = await getChatListByAssistantId(localStorage.token, $selectedAssistantScene.id);
 		} else if (search) {
-			await chats.set(await getChatListBySearchText(localStorage.token, search, $currentChatPage));
+			nextChats = await getChatListBySearchText(localStorage.token, search, $currentChatPage);
 		} else {
-			await chats.set(await getChatList(localStorage.token, $currentChatPage));
+			nextChats = await getChatList(localStorage.token, $currentChatPage);
 		}
+
+		await chats.set(promoteChatToTop($chatListRefreshTarget, nextChats));
 
 		// Enable pagination
 		scrollPaginationEnabled.set(true);
@@ -208,6 +215,40 @@
 	};
 
 	let searchDebounceTimeout;
+	let lastHandledChatListRefreshRevision = 0;
+
+	const normalizeChatListItem = (chat) => ({
+		...chat,
+		time_range: getTimeRange(chat.updated_at)
+	});
+
+	const canPromoteChatInCurrentContext = (chat) => {
+		if (!chat || search) {
+			return false;
+		}
+
+		if ($selectedAssistantScene?.id) {
+			return chat.assistant_id === $selectedAssistantScene.id;
+		}
+
+		return true;
+	};
+
+	const promoteChatToTop = (chat, list = $chats ?? []) => {
+		if (!chat || !canPromoteChatInCurrentContext(chat)) {
+			return list ?? [];
+		}
+
+		const normalizedChat = normalizeChatListItem(chat);
+		const rest = (list ?? []).filter((item) => item.id !== normalizedChat.id);
+		return [normalizedChat, ...rest];
+	};
+
+	const scrollChatsToTop = () => {
+		requestAnimationFrame(() => {
+			sidebarScrollContainerElement?.scrollTo({ top: 0, behavior: 'auto' });
+		});
+	};
 
 	const searchDebounceHandler = async () => {
 		console.log('search', search);
@@ -237,6 +278,28 @@
 		$selectedAssistantScene;
 		if (!search) {
 			void initChatList();
+		}
+	}
+
+	$: if (typeof localStorage !== 'undefined') {
+		const refreshRevision = $chatListRefreshRevision;
+		if (
+			refreshRevision > 0 &&
+			refreshRevision !== lastHandledChatListRefreshRevision
+		) {
+			lastHandledChatListRefreshRevision = refreshRevision;
+			if ($chatListRefreshTarget) {
+				chats.update((list) => promoteChatToTop($chatListRefreshTarget, list ?? []));
+				scrollChatsToTop();
+			}
+
+			void (async () => {
+				await initChatList();
+				if ($chatListRefreshTarget) {
+					scrollChatsToTop();
+					chatListRefreshTarget.set(null);
+				}
+			})();
 		}
 	}
 
@@ -757,6 +820,7 @@
 
 		{#if $showSidebar || $mobile}
 			<div
+				bind:this={sidebarScrollContainerElement}
 				class="sidebar-scroll relative flex flex-col flex-1 overflow-y-auto overflow-x-hidden {$temporaryChatEnabled
 					? 'opacity-20'
 					: ''}"

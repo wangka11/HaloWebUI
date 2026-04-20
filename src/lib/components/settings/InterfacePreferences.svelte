@@ -121,6 +121,7 @@
 	let textScale: number | null = null;
 	let collapseCodeBlocks = false;
 	let collapseHistoricalLongResponses = true;
+	let showInlineCitations = true;
 	let showMessageOutline = true;
 	let showFormulaQuickCopyButton = true;
 	let expandDetails = false;
@@ -242,6 +243,7 @@
 			temporaryChatByDefault: boolean;
 			collapseCodeBlocks: boolean;
 			collapseHistoricalLongResponses: boolean;
+			showInlineCitations: boolean;
 			showMessageOutline: boolean;
 			showFormulaQuickCopyButton: boolean;
 			expandDetails: boolean;
@@ -566,6 +568,7 @@
 			temporaryChatByDefault,
 			collapseCodeBlocks,
 			collapseHistoricalLongResponses,
+			showInlineCitations,
 			showMessageOutline,
 			showFormulaQuickCopyButton,
 			expandDetails,
@@ -645,6 +648,7 @@
 		temporaryChatByDefault = snapshot.temporaryChatByDefault;
 		collapseCodeBlocks = snapshot.collapseCodeBlocks;
 		collapseHistoricalLongResponses = snapshot.collapseHistoricalLongResponses;
+		showInlineCitations = snapshot.showInlineCitations;
 		showMessageOutline = snapshot.showMessageOutline;
 		showFormulaQuickCopyButton = snapshot.showFormulaQuickCopyButton;
 		expandDetails = snapshot.expandDetails;
@@ -715,6 +719,7 @@
 		enableAutoScrollOnStreaming;
 		collapseCodeBlocks;
 		collapseHistoricalLongResponses;
+		showInlineCitations;
 		showMessageOutline;
 		showFormulaQuickCopyButton;
 		expandDetails;
@@ -1012,6 +1017,7 @@
 				temporaryChatByDefault,
 				collapseCodeBlocks,
 				collapseHistoricalLongResponses,
+				showInlineCitations,
 				showMessageOutline,
 				showFormulaQuickCopyButton,
 				expandDetails,
@@ -1198,6 +1204,7 @@
 
 		collapseCodeBlocks = $settings?.collapseCodeBlocks ?? false;
 		collapseHistoricalLongResponses = $settings?.collapseHistoricalLongResponses ?? true;
+		showInlineCitations = $settings?.showInlineCitations ?? true;
 		showMessageOutline = $settings?.showMessageOutline ?? true;
 		showFormulaQuickCopyButton = $settings?.showFormulaQuickCopyButton ?? true;
 		expandDetails = $settings?.expandDetails ?? false;
@@ -2142,6 +2149,14 @@
 											</div>
 											<Switch
 												bind:state={collapseHistoricalLongResponses}
+											/>
+										</div>
+										<div class="flex items-center justify-between glass-item px-4 py-3">
+											<div class="text-sm font-medium">
+												{tr('显示正文引用标签', 'Show Inline Citations')}
+											</div>
+											<Switch
+												bind:state={showInlineCitations}
 											/>
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">

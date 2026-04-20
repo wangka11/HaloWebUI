@@ -128,6 +128,14 @@ const getDiagnosticKeys = (code: string): Record<string, string | null> | null =
 					"A single text chunk was rejected by the embedding service even after splitting the batch to one item. This usually means the chunk exceeds the embedding model's input token limit.",
 				hint: null
 			};
+		case 'document_provider_fallback_failed':
+			return {
+				title: 'Document parsing failed',
+				message:
+					'The system tried the current document parser first, then a backup parser, but neither could read this file.',
+				hint:
+					'Check the selected document parser, required credentials such as API keys, and local parsing dependencies. If you do not have access, ask an administrator to review them, then try again.'
+			};
 		case 'file_processing_failed':
 			return {
 				title: 'File processing failed',

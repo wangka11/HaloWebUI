@@ -36,6 +36,9 @@
 	export let mergeResponses;
 
 	export let addMessages;
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 	export let triggerScroll;
 	export let readOnly = false;
 </script>
@@ -62,6 +65,9 @@
 				{showNextMessage}
 				{editMessage}
 				{deleteMessage}
+				{onBranchMessage}
+				{branchingMessageId}
+				{branchSupported}
 				{readOnly}
 			/>
 		{:else if (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
@@ -83,6 +89,9 @@
 				{continueResponse}
 				{regenerateResponse}
 				{addMessages}
+				{onBranchMessage}
+				{branchingMessageId}
+				{branchSupported}
 				{readOnly}
 			/>
 		{:else}
@@ -102,6 +111,9 @@
 				{mergeResponses}
 				{triggerScroll}
 				{addMessages}
+				{onBranchMessage}
+				{branchingMessageId}
+				{branchSupported}
 				{readOnly}
 			/>
 		{/if}

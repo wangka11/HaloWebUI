@@ -115,6 +115,39 @@
 		pointer-events: none !important;
 	}
 
+	:global(.pdf-export-shell .model-icon),
+	:global(.pdf-export-shell img[alt='profile']) {
+		width: 26px !important;
+		height: 26px !important;
+		min-width: 26px !important;
+		min-height: 26px !important;
+		max-width: 26px !important;
+		max-height: 26px !important;
+		flex: none !important;
+		align-self: flex-start !important;
+	}
+
+	:global(.pdf-export-shell .model-icon__img),
+	:global(.pdf-export-shell img[alt='profile']) {
+		width: 100% !important;
+		height: 100% !important;
+		object-fit: cover !important;
+	}
+
+	:global(.pdf-export-shell .model-icon__img) {
+		object-fit: contain !important;
+	}
+
+	:global(.pdf-export-shell .model-icon + div),
+	:global(.pdf-export-shell .model-icon ~ div.absolute) {
+		max-width: 8px !important;
+		max-height: 8px !important;
+	}
+
+	:global(.pdf-export-shell .shrink-0) {
+		flex-shrink: 0 !important;
+	}
+
 	:global(.pdf-export-shell [class*='animate-']) {
 		animation: none !important;
 	}

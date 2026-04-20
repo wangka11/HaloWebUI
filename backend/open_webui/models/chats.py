@@ -229,6 +229,13 @@ def normalize_chat_payload(chat: Optional[dict]) -> dict:
 
 
 class ChatTable:
+    def _next_user_chat_timestamp(self, db, user_id: str) -> int:
+        now = int(time.time())
+        latest_updated_at = (
+            db.query(func.max(Chat.updated_at)).filter_by(user_id=user_id).scalar() or 0
+        )
+        return latest_updated_at + 1 if latest_updated_at >= now else now
+
     def _build_chat_row(
         self,
         *,
@@ -238,9 +245,10 @@ class ChatTable:
         pinned: Optional[bool] = False,
         folder_id: Optional[str] = None,
         assistant_id: Optional[str] = None,
+        now: Optional[int] = None,
     ) -> Chat:
         normalized_chat = normalize_chat_payload(chat_payload)
-        now = int(time.time())
+        now = now if now is not None else int(time.time())
         title = normalized_chat["title"] if "title" in normalized_chat else "New Chat"
 
         return Chat(
@@ -260,11 +268,13 @@ class ChatTable:
 
     def insert_new_chat(self, user_id: str, form_data: ChatForm) -> Optional[ChatModel]:
         with get_db() as db:
+            now = self._next_user_chat_timestamp(db, user_id)
             result = self._build_chat_row(
                 user_id=user_id,
                 chat_payload=form_data.chat,
                 folder_id=form_data.folder_id,
                 assistant_id=form_data.assistant_id,
+                now=now,
             )
             db.add(result)
             db.commit()
@@ -275,6 +285,7 @@ class ChatTable:
         self, user_id: str, form_data: ChatImportForm
     ) -> Optional[ChatModel]:
         with get_db() as db:
+            now = self._next_user_chat_timestamp(db, user_id)
             result = self._build_chat_row(
                 user_id=user_id,
                 chat_payload=form_data.chat,
@@ -282,6 +293,7 @@ class ChatTable:
                 pinned=form_data.pinned,
                 folder_id=form_data.folder_id,
                 assistant_id=form_data.assistant_id,
+                now=now,
             )
             db.add(result)
             db.commit()
@@ -292,6 +304,7 @@ class ChatTable:
         self, user_id: str, import_forms: list[ChatImportForm]
     ) -> list[ChatModel]:
         with get_db() as db:
+            base_now = int(time.time())
             rows = [
                 self._build_chat_row(
                     user_id=user_id,
@@ -300,8 +313,9 @@ class ChatTable:
                     pinned=form_data.pinned,
                     folder_id=form_data.folder_id,
                     assistant_id=form_data.assistant_id,
+                    now=base_now + idx,
                 )
-                for form_data in import_forms
+                for idx, form_data in enumerate(import_forms)
             ]
 
             existing_chat_ids = [
@@ -342,7 +356,7 @@ class ChatTable:
                 chat_item.title = (
                     normalized_chat["title"] if "title" in normalized_chat else "New Chat"
                 )
-                chat_item.updated_at = int(time.time())
+                chat_item.updated_at = self._next_user_chat_timestamp(db, chat_item.user_id)
                 db.commit()
                 db.refresh(chat_item)
 
@@ -491,7 +505,7 @@ class ChatTable:
                     "chat": normalized_chat,
                     "assistant_id": chat.assistant_id,
                     "created_at": chat.created_at,
-                    "updated_at": int(time.time()),
+                    "updated_at": self._next_user_chat_timestamp(db, f"shared-{chat_id}"),
                 }
             )
             shared_result = Chat(**shared_chat.model_dump())
@@ -522,7 +536,9 @@ class ChatTable:
                 shared_chat.title = chat.title
                 shared_chat.chat = normalize_chat_payload(chat.chat)
 
-                shared_chat.updated_at = int(time.time())
+                shared_chat.updated_at = self._next_user_chat_timestamp(
+                    db, shared_chat.user_id
+                )
                 db.commit()
                 db.refresh(shared_chat)
 
@@ -558,7 +574,7 @@ class ChatTable:
             with get_db() as db:
                 chat = db.get(Chat, id)
                 chat.pinned = not chat.pinned
-                chat.updated_at = int(time.time())
+                chat.updated_at = self._next_user_chat_timestamp(db, chat.user_id)
                 db.commit()
                 db.refresh(chat)
                 return ChatModel.model_validate(chat)
@@ -570,7 +586,7 @@ class ChatTable:
             with get_db() as db:
                 chat = db.get(Chat, id)
                 chat.archived = not chat.archived
-                chat.updated_at = int(time.time())
+                chat.updated_at = self._next_user_chat_timestamp(db, chat.user_id)
                 db.commit()
                 db.refresh(chat)
                 return ChatModel.model_validate(chat)
@@ -993,7 +1009,7 @@ class ChatTable:
             with get_db() as db:
                 chat = db.get(Chat, id)
                 chat.folder_id = folder_id
-                chat.updated_at = int(time.time())
+                chat.updated_at = self._next_user_chat_timestamp(db, chat.user_id)
                 chat.pinned = False
                 db.commit()
                 db.refresh(chat)

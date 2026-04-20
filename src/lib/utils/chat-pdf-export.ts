@@ -134,6 +134,53 @@ const sanitizeFileName = (title?: string | null) => {
 	return `chat-${baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}.pdf`;
 };
 
+const stabilizeModelIconsForExport = (root: HTMLElement) => {
+	const wrappers = Array.from(root.querySelectorAll<HTMLElement>('.model-icon'));
+
+	for (const wrapper of wrappers) {
+		const rect = wrapper.getBoundingClientRect();
+		const width = Math.max(Math.round(rect.width), 1);
+		const height = Math.max(Math.round(rect.height), 1);
+		const wrapperStyle = window.getComputedStyle(wrapper);
+		const img = wrapper.querySelector<HTMLImageElement>('img');
+
+		wrapper.style.width = `${width}px`;
+		wrapper.style.height = `${height}px`;
+		wrapper.style.minWidth = `${width}px`;
+		wrapper.style.minHeight = `${height}px`;
+		wrapper.style.maxWidth = `${width}px`;
+		wrapper.style.maxHeight = `${height}px`;
+		wrapper.style.display = 'inline-flex';
+		wrapper.style.alignItems = 'center';
+		wrapper.style.justifyContent = 'center';
+		wrapper.style.flex = 'none';
+		wrapper.style.overflow = 'hidden';
+		wrapper.style.borderRadius = wrapperStyle.borderRadius;
+		wrapper.style.backgroundColor = wrapperStyle.backgroundColor;
+		wrapper.style.boxShadow = wrapperStyle.boxShadow;
+
+		if (!img) {
+			continue;
+		}
+
+		const imgStyle = window.getComputedStyle(img);
+		img.style.width = `${width}px`;
+		img.style.height = `${height}px`;
+		img.style.minWidth = `${width}px`;
+		img.style.minHeight = `${height}px`;
+		img.style.maxWidth = `${width}px`;
+		img.style.maxHeight = `${height}px`;
+		img.style.display = 'block';
+		img.style.objectFit = imgStyle.objectFit;
+		img.style.transform = imgStyle.transform === 'none' ? '' : imgStyle.transform;
+		img.style.transformOrigin = imgStyle.transformOrigin;
+		img.style.filter = imgStyle.filter === 'none' ? '' : imgStyle.filter;
+		img.style.borderRadius = imgStyle.borderRadius;
+		img.style.opacity = '1';
+		img.style.transition = 'none';
+	}
+};
+
 const applyCompactAppearance = (root: HTMLElement) => {
 	root.style.background = '#ffffff';
 	root.style.color = '#111827';
@@ -247,6 +294,7 @@ export const exportChatPdfFromElement = async ({
 
 	try {
 		await waitForStableLayout();
+		stabilizeModelIconsForExport(clone);
 
 		if (mode === 'compact') {
 			applyCompactAppearance(clone);

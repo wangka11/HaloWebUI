@@ -56,6 +56,14 @@ export const activeChatIds: Writable<Set<string>> = writable(new Set());
 export const channels = writable([]);
 export const chats = writable(null);
 export const pinnedChats = writable([]);
+export const chatListRefreshRevision = writable(0);
+export const chatListRefreshTarget = writable<{
+	id: string;
+	title: string;
+	updated_at: number;
+	created_at: number;
+	assistant_id?: string | null;
+} | null>(null);
 export const tags = writable([]);
 export const folders = writable([]);
 export const selectedFolder = writable(null);
@@ -239,6 +247,7 @@ type Settings = {
 	regenerateMenu?: boolean;
 	collapseCodeBlocks?: boolean;
 	collapseHistoricalLongResponses?: boolean;
+	showInlineCitations?: boolean;
 	showMessageOutline?: boolean;
 	showFormulaQuickCopyButton?: boolean;
 	expandDetails?: boolean;
