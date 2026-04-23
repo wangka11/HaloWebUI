@@ -2,7 +2,7 @@ import logging
 import math
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 import uuid
 
 
@@ -16,6 +16,76 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
 
 
+DEDICATED_IMAGE_MODEL_HINTS = (
+    "gpt-image",
+    "chatgpt-image",
+    "dall-e",
+    "dalle",
+    "imagen",
+    "grok-imagine",
+    "qwen-image",
+    "glm-image",
+    "hunyuan-image",
+    "seedream",
+    "flux",
+    "stable-diffusion",
+    "sdxl",
+    "midjourney",
+    "ideogram",
+    "recraft",
+    "kolors",
+    "wanx",
+    "cogview",
+    "playground",
+    "agnes-image",
+    "nano-banana",
+    "janus",
+    "kandinsky",
+)
+
+IMAGE_ONLY_REGEXES = (
+    re.compile(r"^grok(?:[-.\w]+)?-image(?:[-.\w]+)?$"),
+    re.compile(r"^sd[-.\w]+$"),
+)
+
+
+def _get_model_identity(model: Optional[dict[str, Any]]) -> str:
+    if not isinstance(model, dict):
+        return ""
+
+    info = model.get("info")
+    if isinstance(info, dict):
+        base_model_id = str(info.get("base_model_id") or "").strip()
+        if base_model_id:
+            return base_model_id
+
+    for key in ("original_id", "id", "name"):
+        value = str(model.get(key) or "").strip()
+        if value:
+            return value
+
+    return ""
+
+
+def _get_model_base_name(model: Optional[dict[str, Any]]) -> str:
+    identity = _get_model_identity(model)
+    if "/" in identity:
+        identity = identity.rsplit("/", 1)[-1]
+    return identity.strip().lower()
+
+
+def is_dedicated_image_generation_model(model: Optional[dict[str, Any]]) -> bool:
+    base_name = _get_model_base_name(model)
+    if not base_name:
+        return False
+
+    if "vision" in base_name and "image" not in base_name:
+        return False
+
+    if any(pattern.search(base_name) for pattern in IMAGE_ONLY_REGEXES):
+        return True
+
+    return any(hint in base_name for hint in DEDICATED_IMAGE_MODEL_HINTS)
 def get_task_model_id(
     default_model_id: str, task_model: str, task_model_external: str, models
 ) -> str:

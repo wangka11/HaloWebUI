@@ -586,6 +586,14 @@ li p {
 	--sb-track-alpha-visible: 0.06;
 }
 
+html {
+	scrollbar-gutter: stable;
+}
+
+.scrollbar-stable {
+	scrollbar-gutter: stable;
+}
+
 .dark {
 	--sb-thumb-rgb: 75 85 99;
 	/* gray-600 */

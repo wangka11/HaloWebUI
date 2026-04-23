@@ -147,8 +147,6 @@ async def generate_title(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
@@ -242,8 +240,6 @@ async def generate_chat_tags(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
@@ -307,8 +303,6 @@ async def generate_image_prompt(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
@@ -359,6 +353,11 @@ async def generate_image_prompt(
 async def generate_queries(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
+    if form_data.get("skip_text_enhancements") and form_data.get("type") != "retrieval":
+        return {
+            "detail": "Query generation skipped for image session.",
+            "skipped": True,
+        }
 
     type = form_data.get("type")
     if type == "web_search":
@@ -391,8 +390,6 @@ async def generate_queries(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
@@ -438,6 +435,12 @@ async def generate_queries(
 async def generate_autocompletion(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
+    if form_data.get("skip_text_enhancements"):
+        return {
+            "detail": "Autocompletion skipped for image session.",
+            "skipped": True,
+        }
+
     if not request.app.state.config.ENABLE_AUTOCOMPLETE_GENERATION:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -475,8 +478,6 @@ async def generate_autocompletion(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
@@ -523,6 +524,11 @@ async def generate_autocompletion(
 async def generate_emoji(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
+    if form_data.get("skip_text_enhancements"):
+        return {
+            "detail": "Emoji generation skipped for image session.",
+            "skipped": True,
+        }
 
     if getattr(request.state, "direct", False) and hasattr(request.state, "model"):
         models = {
@@ -541,8 +547,6 @@ async def generate_emoji(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,

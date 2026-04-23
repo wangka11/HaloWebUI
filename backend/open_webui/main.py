@@ -1578,6 +1578,18 @@ async def chat_completion(
         )
 
     try:
+        if metadata.get("local_response") is not None:
+            return await process_chat_response(
+                request,
+                metadata["local_response"],
+                form_data,
+                user,
+                metadata,
+                model,
+                events,
+                tasks,
+            )
+
         _emitter = get_event_emitter(metadata)
         if _emitter:
             await _emitter(

@@ -82,6 +82,7 @@
 		type WebSearchModeSource
 	} from '$lib/utils/web-search-mode';
 	import { getFunctionPipeRootId } from '$lib/utils/image-generation';
+	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
 	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
 
@@ -496,6 +497,22 @@
 		return getModelById(ids[0]) ?? null;
 	};
 
+	const getSingleSelectedDedicatedImageModel = (): Model | null => {
+		const model = getSingleSelectedReasoningModel();
+		if (!model) {
+			return null;
+		}
+
+		return isDedicatedImageGenerationModel(model.id) ? model : null;
+	};
+
+	const canUseChatImageGeneration = () =>
+		Boolean($config?.features?.enable_image_generation) &&
+		($user?.role === 'admin' || $user?.permissions?.features?.image_generation);
+
+	const isImageGenerationActiveForRequest = () =>
+		imageGenerationEnabled || Boolean(getSingleSelectedDedicatedImageModel());
+
 	const getModelDefaultReasoningEffort = (model: Model | null | undefined): string | null =>
 		normalizeReasoningEffortValue((model as any)?.info?.params?.reasoning_effort ?? null);
 
@@ -831,6 +848,9 @@
 			? normalizeWebSearchMode(webSearchMode, 'off')
 			: 'off';
 		const requestFiles = collectFloatingRequestFiles(messages);
+		const imageGenerationActive = canUseChatImageGeneration()
+			? isImageGenerationActiveForRequest()
+			: false;
 
 		return {
 			stream,
@@ -854,17 +874,10 @@
 			tool_servers: $toolServers,
 			features: {
 				memory: $settings?.memory ?? false,
-				image_generation:
-					$config?.features?.enable_image_generation &&
-					($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
-						? imageGenerationEnabled
-						: false,
-				image_generation_options:
-					imageGenerationEnabled &&
-					$config?.features?.enable_image_generation &&
-					($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
-						? getImageGenerationOptionsPayload()
-						: undefined,
+				image_generation: imageGenerationActive,
+				image_generation_options: imageGenerationActive
+					? getImageGenerationOptionsPayload()
+					: undefined,
 				code_interpreter:
 					$config?.features?.enable_code_interpreter &&
 					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
@@ -909,6 +922,13 @@
 	const canUseChatWebSearch = () =>
 		isChatWebSearchFeatureEnabled() &&
 		($user?.role === 'admin' || $user?.permissions?.features?.web_search);
+
+	$: {
+		const dedicatedImageModel = getSingleSelectedDedicatedImageModel();
+		if (dedicatedImageModel && canUseChatImageGeneration() && !imageGenerationEnabled) {
+			imageGenerationEnabled = true;
+		}
+	}
 
 	const decodeTokenUserId = (token: string | null | undefined): string | null => {
 		if (!token || typeof atob !== 'function') {
@@ -993,6 +1013,10 @@
 				([, value]) => value !== undefined && value !== null && value !== ''
 			)
 		);
+		const dedicatedImageModel = getSingleSelectedDedicatedImageModel();
+		if (dedicatedImageModel?.id) {
+			payload.model = dedicatedImageModel.id;
+		}
 		return Object.keys(payload).length > 0 ? payload : undefined;
 	};
 
@@ -4143,6 +4167,12 @@
 		}
 
 		const requestSkillIds = collectRequestSkillIds(messages);
+		const requestedWebSearchMode = canUseChatWebSearch()
+			? normalizeWebSearchMode(webSearchMode, 'off')
+			: 'off';
+		const imageGenerationActive = canUseChatImageGeneration()
+			? isImageGenerationActiveForRequest()
+			: false;
 
 		messages = messages
 			.map((message, idx, arr) => {
@@ -4157,19 +4187,24 @@
 					textContent = `${textContent}\n\n${_pendingInstruction}`;
 				}
 
+				const imageFiles = message.files?.filter((file) => file.type === 'image') ?? [];
+				const includeImagesInContent =
+					imageFiles.length > 0 && (message.role === 'user' || imageGenerationActive);
+
 				return {
 					role: message.role,
-					...((message.files?.filter((file) => file.type === 'image').length > 0 ?? false) &&
-					message.role === 'user'
+					...(includeImagesInContent
 						? {
 								content: [
-									{
-										type: 'text',
-										text: textContent
-									},
-									...message.files
-										.filter((file) => file.type === 'image')
-										.map((file) => ({
+									...(textContent
+										? [
+												{
+													type: 'text',
+													text: textContent
+												}
+											]
+										: []),
+									...imageFiles.map((file) => ({
 										type: 'image_url',
 										image_url: {
 											url: buildModelImageRequestUrl(file)
@@ -4182,11 +4217,15 @@
 							})
 				};
 			})
-			.filter((message) => message?.role === 'user' || message?.content?.trim());
-
-		const requestedWebSearchMode = canUseChatWebSearch()
-			? normalizeWebSearchMode(webSearchMode, 'off')
-			: 'off';
+			.filter((message) => {
+				if (message?.role === 'user') {
+					return true;
+				}
+				if (Array.isArray(message?.content)) {
+					return message.content.length > 0;
+				}
+				return message?.content?.trim();
+			});
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
@@ -4220,17 +4259,10 @@
 
 				features: {
 					memory: $settings?.memory ?? false,
-					image_generation:
-						$config?.features?.enable_image_generation &&
-						($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
-							? imageGenerationEnabled
-							: false,
-					image_generation_options:
-						imageGenerationEnabled &&
-						$config?.features?.enable_image_generation &&
-						($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
-							? getImageGenerationOptionsPayload()
-							: undefined,
+					image_generation: imageGenerationActive,
+					image_generation_options: imageGenerationActive
+						? getImageGenerationOptionsPayload()
+						: undefined,
 					code_interpreter:
 						$config?.features?.enable_code_interpreter &&
 						($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
@@ -4257,6 +4289,7 @@
 				id: responseMessageId,
 
 				...(!$temporaryChatEnabled &&
+				!imageGenerationActive &&
 				(messages.length == 1 ||
 					(messages.length == 2 &&
 						messages.at(0)?.role === 'system' &&
@@ -4269,7 +4302,9 @@
 								follow_up_generation: $settings?.autoFollowUps ?? true
 							}
 						}
-					: !$temporaryChatEnabled && ($settings?.autoFollowUps ?? true)
+					: !$temporaryChatEnabled &&
+					  !imageGenerationActive &&
+					  ($settings?.autoFollowUps ?? true)
 						? {
 								background_tasks: {
 									follow_up_generation: true
@@ -5124,6 +5159,7 @@
 				{stopResponse}
 				{showMessage}
 				{eventTarget}
+				{imageGenerationEnabled}
 				{currentValvesContext}
 			/>
 		</PaneGroup>

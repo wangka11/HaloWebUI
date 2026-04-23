@@ -1,10 +1,15 @@
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
 import mimetypes
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -22,10 +27,15 @@ from open_webui.env import (
     REQUESTS_VERIFY,
     SRC_LOG_LEVELS,
 )
+from open_webui.models.files import Files
 from open_webui.routers import gemini as gemini_router
 from open_webui.routers import grok as grok_router
 from open_webui.routers import openai as openai_router
 from open_webui.routers.files import upload_file
+from open_webui.utils.chat_image_refs import (
+    extract_chat_image_file_id,
+    resolve_chat_image_url_to_bytes,
+)
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.error_handling import build_error_detail, read_requests_error_payload
@@ -55,8 +65,12 @@ IMAGE_MODEL_DISCOVERY_CACHE_MAX_ENTRIES = 64
 IMAGE_MODEL_DISCOVERY_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 MARKDOWN_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 DATA_IMAGE_URL_RE = re.compile(r"data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+", re.IGNORECASE)
+OPENAI_IMAGE_NODE_HELPER_PATH = (
+    Path(__file__).resolve().parents[1] / "utils" / "openai-image-fetch.mjs"
+)
 
 OPENAI_IMAGE_FAMILY_PREFIXES = ("dall-e", "dalle", "gpt-image")
+OPENAI_IMAGE_ALLOWED_SIZES = {"1024x1024", "1536x1024", "1024x1536"}
 VOLCENGINE_IMAGES_ENDPOINT_HINTS = ("seedream", "seededit")
 OPENAI_CHAT_IMAGE_HINTS = (
     "chatgpt-image",
@@ -150,6 +164,41 @@ GROK_IMAGE_ASPECT_RATIOS = (
     "9:20",
     "auto",
 )
+
+
+def _redact_upstream_headers(headers: dict[str, Any]) -> dict[str, str]:
+    redacted: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        header_name = str(key)
+        if header_name.lower() in {"authorization", "api-key", "x-api-key"}:
+            redacted[header_name] = "<redacted>"
+        else:
+            redacted[header_name] = str(value)
+    return redacted
+
+
+def _filter_process_debug_env(env: dict[str, str]) -> dict[str, str]:
+    allowed_keys = (
+        "PATH",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "NODE_OPTIONS",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    )
+    return {
+        key: str(env.get(key) or "")
+        for key in allowed_keys
+        if key in env
+    }
+
 
 def _evict_stale_image_models_cache(now: float) -> None:
     stale_keys = [
@@ -2183,6 +2232,7 @@ class GenerateImageForm(BaseModel):
     image_size: Optional[str] = None
     aspect_ratio: Optional[str] = None
     resolution: Optional[str] = None
+    image_url: Optional[str] = None
     n: int = 1
     negative_prompt: Optional[str] = None
     credential_source: Optional[str] = None
@@ -2639,8 +2689,6 @@ def _get_openai_images_generation_url(base_url: str, api_config: Optional[dict])
 def _post_json_with_attempts(
     attempts: list[tuple[str, dict[str, str]]],
     payload: dict[str, Any],
-    *,
-    timeout: int = 60,
 ) -> tuple[requests.Response, str]:
     last_response: Optional[requests.Response] = None
     last_error: Optional[BaseException] = None
@@ -2651,7 +2699,6 @@ def _post_json_with_attempts(
                 url=url,
                 json=payload,
                 headers=headers,
-                timeout=timeout,
                 verify=REQUESTS_VERIFY,
             )
         except Exception as error:
@@ -2687,6 +2734,493 @@ def _parse_upstream_json_response(
         )
 
 
+def _looks_like_response_format_rejection(response: requests.Response) -> bool:
+    try:
+        body = read_requests_error_payload(response)
+    except Exception:
+        body = getattr(response, "text", "") or ""
+
+    return _looks_like_response_format_rejection_body(body)
+
+
+def _looks_like_response_format_rejection_body(body: Any) -> bool:
+    lowered = str(body or "").lower()
+    return "response_format" in lowered and (
+        "unknown parameter" in lowered
+        or "unsupported parameter" in lowered
+        or "not supported" in lowered
+        or "invalid" in lowered
+    )
+
+
+def _build_node_openai_image_request_manifest(
+    *,
+    url: str,
+    headers: dict[str, str],
+    request_kind: str,
+    json_body: Optional[dict[str, Any]] = None,
+    form_fields: Optional[dict[str, Any]] = None,
+    files: Optional[list[dict[str, Any]]] = None,
+    response_body_path: Optional[str] = None,
+) -> dict[str, Any]:
+    manifest: dict[str, Any] = {
+        "url": url,
+        "headers": dict(headers),
+        "request_kind": request_kind,
+    }
+    if json_body is not None:
+        manifest["json_body"] = json_body
+    if form_fields is not None:
+        manifest["form_fields"] = form_fields
+    if files is not None:
+        manifest["files"] = files
+    if response_body_path is not None:
+        manifest["response_body_path"] = response_body_path
+    return manifest
+
+
+def _resolve_node_runtime_command() -> str:
+    node_path = shutil.which("node") or shutil.which("nodejs")
+    if node_path:
+        return node_path
+    raise RuntimeError(
+        "Node.js runtime is required for OpenAI image requests but was not found."
+    )
+
+
+def _run_node_openai_image_request(
+    *,
+    url: str,
+    headers: dict[str, str],
+    request_kind: str,
+    json_body: Optional[dict[str, Any]] = None,
+    form_fields: Optional[dict[str, Any]] = None,
+    files: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    helper_script = OPENAI_IMAGE_NODE_HELPER_PATH
+    if not helper_script.exists():
+        raise RuntimeError(
+            f"OpenAI image fetch helper not found: {helper_script}"
+        )
+
+    node_command = _resolve_node_runtime_command()
+
+    with tempfile.TemporaryDirectory(prefix="halo-openai-image-") as temp_dir:
+        temp_path = Path(temp_dir)
+        response_body_path = temp_path / "response-body.txt"
+        manifest_path = temp_path / "request-manifest.json"
+        result_path = temp_path / "result.json"
+        parent_debug = {
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "node_command": node_command,
+            "helper_script": str(helper_script),
+            "env": _filter_process_debug_env(os.environ),
+        }
+
+        manifest_files: list[dict[str, Any]] = []
+        for file_item in files or []:
+            filename = Path(str(file_item.get("filename") or "file.bin")).name or "file.bin"
+            target_path = temp_path / filename
+            target_path.write_bytes(file_item.get("data") or b"")
+            manifest_files.append(
+                {
+                    "field_name": str(file_item.get("field_name") or "file"),
+                    "filename": filename,
+                    "mime": str(file_item.get("mime") or "application/octet-stream"),
+                    "path": str(target_path),
+                }
+            )
+
+        manifest = _build_node_openai_image_request_manifest(
+            url=url,
+            headers=headers,
+            request_kind=request_kind,
+            json_body=json_body,
+            form_fields=form_fields,
+            files=manifest_files,
+            response_body_path=str(response_body_path),
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        if not REQUESTS_VERIFY:
+            env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+
+        completed = subprocess.run(
+            [node_command, str(helper_script), str(manifest_path), str(result_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        if not result_path.exists():
+            stderr = (completed.stderr or "").strip()
+            raise RuntimeError(
+                f"OpenAI image helper did not produce a result. exit_code={completed.returncode} stderr={stderr}"
+            )
+
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if not isinstance(result, dict):
+            raise RuntimeError("OpenAI image helper returned an invalid result payload.")
+
+        result["response_body"] = (
+            response_body_path.read_text(encoding="utf-8")
+            if response_body_path.exists()
+            else ""
+        )
+        result["parent_debug"] = parent_debug
+        result["stdout"] = completed.stdout or ""
+        result["stderr"] = completed.stderr or ""
+        result["exit_code"] = completed.returncode
+        return result
+
+
+async def _send_openai_image_request_via_node(
+    *,
+    url: str,
+    headers: dict[str, str],
+    request_kind: str,
+    json_body: Optional[dict[str, Any]] = None,
+    form_fields: Optional[dict[str, Any]] = None,
+    files: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    result = await asyncio.to_thread(
+        _run_node_openai_image_request,
+        url=url,
+        headers=headers,
+        request_kind=request_kind,
+        json_body=json_body,
+        form_fields=form_fields,
+        files=files,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("OpenAI image helper returned a non-dict result.")
+    return result
+
+
+def _parse_node_helper_response_json(
+    result: dict[str, Any], *, default_message: str
+) -> Any:
+    try:
+        return json.loads(result.get("response_body") or "")
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=build_error_detail(
+                result.get("response_body"),
+                error,
+                default=default_message,
+            ),
+        )
+
+
+def _raise_node_helper_error(result: dict[str, Any], *, default_message: str) -> None:
+    error_message = str(result.get("error_message") or "").strip()
+    error_type = str(result.get("error_type") or "").strip()
+    error_cause_type = str(result.get("error_cause_type") or "").strip()
+    error_cause_code = str(result.get("error_cause_code") or "").strip()
+    error_cause_message = str(result.get("error_cause_message") or "").strip()
+    stderr = str(result.get("stderr") or "").strip()
+    response_body = str(result.get("response_body") or "").strip()
+    elapsed_ms = result.get("elapsed_ms")
+    exit_code = result.get("exit_code")
+    error_stack = str(result.get("error_stack") or "").strip()
+    error_cause_stack = str(result.get("error_cause_stack") or "").strip()
+    debug_payload = result.get("debug")
+    parent_debug = result.get("parent_debug")
+
+    detail_parts: list[str] = []
+    if error_type:
+        detail_parts.append(f"error_type={error_type}")
+    if error_message:
+        detail_parts.append(error_message)
+
+    cause_parts = []
+    if error_cause_type:
+        cause_parts.append(error_cause_type)
+    if error_cause_code:
+        cause_parts.append(f"code={error_cause_code}")
+    if error_cause_message:
+        cause_parts.append(error_cause_message)
+    if cause_parts:
+        detail_parts.append("cause=" + " | ".join(cause_parts))
+
+    if elapsed_ms not in (None, ""):
+        detail_parts.append(f"elapsed_ms={elapsed_ms}")
+    if exit_code not in (None, ""):
+        detail_parts.append(f"exit_code={exit_code}")
+    if stderr:
+        detail_parts.append(f"stderr={stderr}")
+
+    detail_text = "; ".join(detail_parts)
+    log.warning(
+        "openai_image_node_helper_failed error_type=%s error_message=%s error_cause_type=%s error_cause_code=%s error_cause_message=%s elapsed_ms=%s exit_code=%s stderr=%s error_stack=%s error_cause_stack=%s parent_debug=%s helper_debug=%s",
+        error_type or "",
+        error_message or "",
+        error_cause_type or "",
+        error_cause_code or "",
+        error_cause_message or "",
+        elapsed_ms if elapsed_ms is not None else "",
+        exit_code if exit_code is not None else "",
+        stderr or "",
+        error_stack or "",
+        error_cause_stack or "",
+        json.dumps(parent_debug, ensure_ascii=False, sort_keys=True)
+        if isinstance(parent_debug, dict)
+        else "",
+        json.dumps(debug_payload, ensure_ascii=False, sort_keys=True)
+        if isinstance(debug_payload, dict)
+        else "",
+    )
+    detail = build_error_detail(
+        detail_text,
+        response_body,
+        default=default_message,
+    )
+    raise RuntimeError(detail)
+
+
+def _get_openai_images_edit_url(base_url: str, api_config: Optional[dict]) -> str:
+    normalized_url = _normalize_base_url(base_url)
+    if openai_router._is_force_mode_connection(normalized_url, api_config):
+        suffix = openai_router.OPENAI_CHAT_COMPLETIONS_SUFFIX
+        if normalized_url.endswith(suffix):
+            normalized_url = normalized_url[: -len(suffix)]
+
+    is_azure = bool((api_config or {}).get("azure")) or "openai.azure.com" in normalized_url
+    if is_azure:
+        api_version = str((api_config or {}).get("api_version") or "2024-02-01")
+        return f"{normalized_url}/images/edits?api-version={api_version}"
+    return f"{normalized_url}/images/edits"
+
+
+def _resolve_image_edit_input(
+    request: Request, user, image_url: Optional[str]
+) -> Optional[tuple[str, bytes]]:
+    if not image_url or not str(image_url).strip():
+        return None
+
+    resolved = resolve_chat_image_url_to_bytes(
+        image_url,
+        user_id=getattr(user, "id", None),
+        is_admin=getattr(user, "role", "") == "admin",
+    )
+    if resolved:
+        mime_type, data = resolved
+        return mime_type, data
+
+    token_obj = getattr(getattr(request, "state", None), "token", None)
+    session_token = getattr(token_obj, "credentials", None) if token_obj else None
+    auth_headers = (
+        {"Authorization": f"Bearer {session_token}"} if session_token else None
+    )
+    loaded = load_url_image_data(
+        str(image_url).strip(),
+        auth_headers,
+        allowed_base_urls=[str(request.base_url).rstrip("/")],
+    )
+    if not loaded:
+        return None
+    return loaded[1], loaded[0]
+
+
+async def _generate_via_openai_image_edits_endpoint(
+    request: Request,
+    user,
+    *,
+    model_id: str,
+    prompt: str,
+    image_url: str,
+    n: int,
+    size: Optional[str],
+    background: Optional[str],
+    source: dict[str, Any],
+) -> list[dict[str, str]]:
+    base_url = source.get("base_url") or ""
+    api_key = source.get("key") or ""
+    api_config = source.get("api_config") or {}
+    headers = _build_openai_image_headers(
+        base_url,
+        api_key,
+        api_config,
+        user,
+        content_type=None,
+    )
+    content_type_header = next(
+        (header for header in list(headers.keys()) if header.lower() == "content-type"),
+        None,
+    )
+    if content_type_header:
+        headers.pop(content_type_header, None)
+    base_name = _model_id_basename(model_id).lower()
+    is_official_openai_image_family = (
+        base_name.startswith(OPENAI_IMAGE_FAMILY_PREFIXES)
+        and (
+            openai_router._is_official_openai_connection(base_url)
+            or bool(api_config.get("azure"))
+        )
+    )
+
+    resolved_image = _resolve_image_edit_input(request, user, image_url)
+    if not resolved_image:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to resolve image input for edit request.",
+        )
+
+    image_mime, image_bytes = resolved_image
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "prompt": prompt,
+        "n": n,
+    }
+    if size:
+        payload["size"] = size
+    if background:
+        payload["background"] = background
+    if not is_official_openai_image_family:
+        payload["response_format"] = "b64_json"
+
+    image_extension = mimetypes.guess_extension(image_mime or "image/png") or ".png"
+    image_filename = f"image{image_extension}"
+    source_file_id = extract_chat_image_file_id(image_url)
+    source_file = Files.get_file_by_id(source_file_id) if source_file_id else None
+    source_file_meta = (
+        source_file.meta
+        if source_file and isinstance(getattr(source_file, "meta", None), dict)
+        else {}
+    )
+    try:
+        log.info(
+            "openai_image_edit_input model=%s source_image_url=%s source_file_id=%s source_file_name=%s source_file_size=%s source_file_sha256=%s resolved_mime=%s resolved_bytes=%s prompt_len=%s prompt_sha256=%s payload_keys=%s request_url=%s request_headers=%s node_runtime=%s server_pid=%s server_cwd=%s server_env=%s",
+            model_id,
+            str(image_url or "").strip(),
+            source_file_id or "",
+            source_file_meta.get("name") or getattr(source_file, "filename", None) or "",
+            source_file_meta.get("size") or "",
+            hashlib.sha256(image_bytes).hexdigest(),
+            image_mime or "",
+            len(image_bytes),
+            len(str(prompt or "")),
+            hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest(),
+            sorted(payload.keys()),
+            _get_openai_images_edit_url(base_url, api_config),
+            json.dumps(_redact_upstream_headers(headers), ensure_ascii=False, sort_keys=True),
+            _resolve_node_runtime_command(),
+            os.getpid(),
+            os.getcwd(),
+            json.dumps(_filter_process_debug_env(os.environ), ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:
+        pass
+    generation_url = _get_openai_images_edit_url(base_url, api_config)
+    result = await _send_openai_image_request_via_node(
+        url=generation_url,
+        headers=headers,
+        request_kind="multipart",
+        form_fields=payload,
+        files=[
+            {
+                "field_name": "image",
+                "filename": image_filename,
+                "mime": image_mime or "image/png",
+                "data": image_bytes,
+            }
+        ],
+    )
+    try:
+        log.info(
+            "openai_image_node_helper_result status=%s elapsed_ms=%s response_headers=%s parent_debug=%s helper_debug=%s",
+            result.get("status"),
+            result.get("elapsed_ms"),
+            json.dumps(
+                _redact_upstream_headers(result.get("headers") or {}),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            json.dumps(result.get("parent_debug") or {}, ensure_ascii=False, sort_keys=True),
+            json.dumps(result.get("debug") or {}, ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:
+        pass
+    if result.get("error_type"):
+        _raise_node_helper_error(
+            result,
+            default_message="Failed to edit image via Node OpenAI image helper",
+        )
+
+    response_body_text = str(result.get("response_body") or "")
+    response_status = result.get("status")
+    if isinstance(response_status, int) and response_status >= 400 and _looks_like_response_format_rejection_body(
+        response_body_text
+    ):
+        retry_payload = dict(payload)
+        retry_payload.pop("response_format", None)
+        result = await _send_openai_image_request_via_node(
+            url=generation_url,
+            headers=headers,
+            request_kind="multipart",
+            form_fields=retry_payload,
+            files=[
+                {
+                    "field_name": "image",
+                    "filename": image_filename,
+                    "mime": image_mime or "image/png",
+                    "data": image_bytes,
+                }
+            ],
+        )
+        if result.get("error_type"):
+            _raise_node_helper_error(
+                result,
+                default_message="Failed to edit image via Node OpenAI image helper",
+            )
+        if isinstance(result.get("status"), int) and result["status"] < 400:
+            payload = retry_payload
+
+    response_status = result.get("status")
+    response_body_text = str(result.get("response_body") or "")
+    if not isinstance(response_status, int):
+        _raise_node_helper_error(
+            result,
+            default_message="OpenAI image helper did not return an HTTP status",
+        )
+    if response_status >= 400:
+        raise HTTPException(
+            status_code=response_status,
+            detail=build_error_detail(
+                response_body_text,
+                default="Failed to edit image via upstream /images/edits",
+            ),
+        )
+
+    response_body = _parse_node_helper_response_json(
+        result,
+        default_message="Invalid JSON response from upstream /images/edits",
+    )
+    images = _extract_generated_images_from_openai_response(
+        response_body,
+        headers=headers,
+        allowed_base_urls=[base_url],
+    )
+    if not images:
+        raise HTTPException(
+            status_code=400,
+            detail="Upstream image edit completed but returned no images.",
+        )
+
+    return [
+        {
+            "url": upload_image(request, payload, output_image_bytes, mime_type, user),
+        }
+        for output_image_bytes, mime_type in images
+    ]
+
+
 async def _generate_via_openai_images_endpoint(
     request: Request,
     user,
@@ -2694,7 +3228,7 @@ async def _generate_via_openai_images_endpoint(
     model_id: str,
     prompt: str,
     n: int,
-    size: str,
+    size: Optional[str],
     background: Optional[str],
     source: dict[str, Any],
 ) -> list[dict[str, str]]:
@@ -2702,37 +3236,80 @@ async def _generate_via_openai_images_endpoint(
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
     headers = _build_openai_image_headers(base_url, api_key, api_config, user)
-    payload = {
+    base_name = _model_id_basename(model_id).lower()
+    is_official_openai_image_family = (
+        base_name.startswith(OPENAI_IMAGE_FAMILY_PREFIXES)
+        and (
+            openai_router._is_official_openai_connection(base_url)
+            or bool(api_config.get("azure"))
+        )
+    )
+
+    payload: dict[str, Any] = {
         "model": model_id,
         "prompt": prompt,
         "n": n,
-        "size": size,
-        "response_format": "b64_json",
     }
+    if size:
+        payload["size"] = size
+    if not is_official_openai_image_family:
+        payload["response_format"] = "b64_json"
 
     if background:
         payload["background"] = background
 
     generation_url = _get_openai_images_generation_url(base_url, api_config)
-    response = await asyncio.to_thread(
-        requests.post,
-        generation_url,
-        json=payload,
+    result = await _send_openai_image_request_via_node(
+        url=generation_url,
         headers=headers,
-        timeout=60,
-        verify=REQUESTS_VERIFY,
+        request_kind="json",
+        json_body=payload,
     )
-    if response.status_code >= 400:
+    if result.get("error_type"):
+        _raise_node_helper_error(
+            result,
+            default_message="Failed to generate image via Node OpenAI image helper",
+        )
+
+    response_status = result.get("status")
+    response_body_text = str(result.get("response_body") or "")
+    if isinstance(response_status, int) and response_status >= 400 and _looks_like_response_format_rejection_body(
+        response_body_text
+    ):
+        retry_payload = dict(payload)
+        retry_payload.pop("response_format", None)
+        result = await _send_openai_image_request_via_node(
+            url=generation_url,
+            headers=headers,
+            request_kind="json",
+            json_body=retry_payload,
+        )
+        if result.get("error_type"):
+            _raise_node_helper_error(
+                result,
+                default_message="Failed to generate image via Node OpenAI image helper",
+            )
+        if isinstance(result.get("status"), int) and result["status"] < 400:
+            payload = retry_payload
+
+    response_status = result.get("status")
+    response_body_text = str(result.get("response_body") or "")
+    if not isinstance(response_status, int):
+        _raise_node_helper_error(
+            result,
+            default_message="OpenAI image helper did not return an HTTP status",
+        )
+    if response_status >= 400:
         raise HTTPException(
-            status_code=response.status_code,
+            status_code=response_status,
             detail=build_error_detail(
-                read_requests_error_payload(response),
+                response_body_text,
                 default="Failed to generate image via upstream /images/generations",
             ),
         )
 
-    response_body = _parse_upstream_json_response(
-        response,
+    response_body = _parse_node_helper_response_json(
+        result,
         default_message="Invalid JSON response from upstream /images/generations",
     )
     images = _extract_generated_images_from_openai_response(
@@ -2796,9 +3373,21 @@ async def _generate_via_xai_images(
         generation_url,
         json=payload,
         headers=headers,
-        timeout=60,
         verify=REQUESTS_VERIFY,
     )
+    if response.status_code >= 400 and _looks_like_response_format_rejection(response):
+        retry_payload = dict(payload)
+        retry_payload.pop("response_format", None)
+        response = await asyncio.to_thread(
+            requests.post,
+            generation_url,
+            json=retry_payload,
+            headers=headers,
+            verify=REQUESTS_VERIFY,
+        )
+        if response.status_code < 400:
+            payload = retry_payload
+
     if response.status_code >= 400:
         raise HTTPException(
             status_code=response.status_code,
@@ -2895,7 +3484,6 @@ async def _generate_via_openai_chat_image(
             chat_url,
             json=candidate_payload,
             headers=headers,
-            timeout=90,
             verify=REQUESTS_VERIFY,
         )
         if response.status_code < 400:
@@ -2979,7 +3567,6 @@ async def _generate_via_gemini_predict(
             _post_json_with_attempts,
             attempts,
             payload,
-            timeout=90,
         )
     except requests.HTTPError as error:
         response = error.response
@@ -3046,7 +3633,6 @@ async def _generate_via_gemini_generate_content(
             _post_json_with_attempts,
             attempts,
             payload,
-            timeout=90,
         )
     except requests.HTTPError as error:
         response = error.response
@@ -3097,9 +3683,11 @@ async def image_generations(
         )
 
     effective_size = request.app.state.config.IMAGE_SIZE
+    explicit_size = None
     if form_data.size is not None:
         if re.match(r"^\d+x\d+$", form_data.size):
             effective_size = form_data.size
+            explicit_size = form_data.size
         else:
             raise HTTPException(
                 status_code=400,
@@ -3206,10 +3794,21 @@ async def image_generations(
                 if (selected_model_meta or {}).get("supports_background")
                 else None
             )
+            openai_request_size: Optional[str] = effective_size
+            if (
+                generation_mode == "openai_images"
+                and str(selected_model or "").strip().lower().startswith(OPENAI_IMAGE_FAMILY_PREFIXES)
+                and (
+                    openai_router._is_official_openai_connection(source.get("base_url") or "")
+                    or bool((source.get("api_config") or {}).get("azure"))
+                )
+                and (explicit_size is None or explicit_size not in OPENAI_IMAGE_ALLOWED_SIZES)
+            ):
+                openai_request_size = None
 
             try:
                 log.info(
-                    f"image_generation user_id={user.id} engine=openai credential_source={source.get('effective_source') or credential_source} connection_index={source.get('connection_index') if source.get('connection_index') is not None else ''} model={selected_model or ''} generation_mode={generation_mode} size={effective_size} n={requested_n} steps={(form_data.steps if form_data.steps is not None else '')}"
+                    f"image_generation user_id={user.id} engine=openai credential_source={source.get('effective_source') or credential_source} connection_index={source.get('connection_index') if source.get('connection_index') is not None else ''} model={selected_model or ''} generation_mode={generation_mode} edit_input={'yes' if form_data.image_url else 'no'} size={(openai_request_size or 'auto')} n={requested_n} steps={(form_data.steps if form_data.steps is not None else '')}"
                 )
             except Exception:
                 pass
@@ -3240,13 +3839,26 @@ async def image_generations(
                     fallback_size=effective_size,
                 )
 
+            if form_data.image_url:
+                return await _generate_via_openai_image_edits_endpoint(
+                    request,
+                    user,
+                    model_id=selected_model,
+                    prompt=form_data.prompt,
+                    image_url=form_data.image_url,
+                    n=requested_n,
+                    size=openai_request_size,
+                    background=background,
+                    source=source,
+                )
+
             return await _generate_via_openai_images_endpoint(
                 request,
                 user,
                 model_id=selected_model,
                 prompt=form_data.prompt,
                 n=requested_n,
-                size=effective_size,
+                size=openai_request_size,
                 background=background,
                 source=source,
             )

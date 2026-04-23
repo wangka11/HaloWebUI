@@ -67,6 +67,7 @@
 	import Image from '../common/Image.svelte';
 	import ModelIcon from '../common/ModelIcon.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
 	import type { ChatAssistantSnapshot } from '$lib/utils/chat-assistants';
 	import {
 		isWebSearchEnabled,
@@ -106,6 +107,12 @@
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
+
+	const shouldSkipTextEnhancements = () =>
+		imageGenerationEnabled ||
+		(selectedModelIds.length === 1 &&
+			typeof selectedModelIds[0] === 'string' &&
+			isDedicatedImageGenerationModel(selectedModelIds[0]));
 
 	export let history;
 	export let taskIds = null;
@@ -1229,7 +1236,11 @@
 														text,
 														history?.currentId
 															? createMessagesList(history, history.currentId)
-															: null
+															: null,
+														'search query',
+														{
+															skipTextEnhancements: shouldSkipTextEnhancements()
+														}
 													).catch((error) => {
 														console.log(error);
 

@@ -821,7 +821,7 @@
 		{#if $showSidebar || $mobile}
 			<div
 				bind:this={sidebarScrollContainerElement}
-				class="sidebar-scroll relative flex flex-col flex-1 overflow-y-auto overflow-x-hidden {$temporaryChatEnabled
+				class="sidebar-scroll relative flex flex-col flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable {$temporaryChatEnabled
 					? 'opacity-20'
 					: ''}"
 			>
