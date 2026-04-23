@@ -832,6 +832,7 @@
 	"OneDrive": "OneDrive",
 	"Only alphanumeric characters and hyphens are allowed": "只允許使用英文字母、數字和連字號",
 	"Only alphanumeric characters and hyphens are allowed in the command string.": "命令字串中只允許使用英文字母、數字和連字號。",
+	"Title can be in any language. If the command is blank, enter an English command manually.": "標題可以使用任何語言；如果命令為空，請手動填寫英文命令。",
 	"Only collections can be edited, create a new knowledge base to edit/add documents.": "只能編輯集合，請建立新的知識以編輯或新增文件。",
 	"Only select users and groups with permission can access": "只有具有權限的選定使用者和群組可以存取",
 	"Oops! Looks like the URL is invalid. Please double-check and try again.": "哎呀！這個 URL 似乎無效。請仔細檢查並再試一次。",

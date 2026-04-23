@@ -131,7 +131,7 @@
 		</nav>
 
 		<div
-			class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto scrollbar-stable"
+			class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto"
 			id="settings-container"
 		>
 			<div class="flex flex-col lg:flex-row w-full h-full min-h-0 pb-2 lg:space-x-4">

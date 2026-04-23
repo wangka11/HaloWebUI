@@ -1345,6 +1345,7 @@
 	"OneDrive": "OneDrive 云",
 	"Only alphanumeric characters and hyphens are allowed": "只允许使用英文字母，数字 (0-9) 以及连字符 (-)",
 	"Only alphanumeric characters and hyphens are allowed in the command string.": "命令字符串中只允许使用英文字母，数字 (0-9) 以及连字符 (-)。",
+	"Title can be in any language. If the command is blank, enter an English command manually.": "标题可以使用任意语言；如果命令为空，请手动填写英文命令。",
 	"Only alphanumeric characters and underscores are allowed in the id.": "ID 只允许使用英文字母、数字和下划线 (_)。",
 	"The id must start with a letter or underscore, and may contain only letters, numbers, and underscores.": "ID 必须以英文字母或下划线 (_) 开头，且只能包含英文字母、数字和下划线 (_)。",
 	"Only collections can be edited, create a new knowledge base to edit/add documents.": "只能编辑文件集，创建一个新的知识库来编辑/添加文件。",
