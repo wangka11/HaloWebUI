@@ -350,13 +350,19 @@ class PDFGenerator:
         text_width = max(10, available_width - marker_width)
         line_height = self.LINE_HEIGHT
 
+        if pdf.will_page_break(line_height):
+            pdf.add_page()
+
         if self._has_visible_inline_content(intro_nodes):
             y = pdf.get_y()
             original_left_margin = pdf.l_margin
+            start_page = pdf.page_no()
             pdf.set_font(self.font_family, "", 11)
             pdf.set_text_color(17, 24, 39)
             pdf.set_xy(start_x, y)
             pdf.multi_cell(marker_width, line_height, marker, align="R", new_x="RIGHT", new_y="TOP")
+            if pdf.page_no() != start_page:
+                y = pdf.get_y()
             pdf.set_left_margin(start_x + marker_width)
             pdf.set_xy(start_x + marker_width, y)
             self._render_inline_nodes(
