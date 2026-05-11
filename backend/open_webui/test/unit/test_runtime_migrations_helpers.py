@@ -5,6 +5,8 @@ from open_webui.runtime_migrations import (
     RuntimeMigrationError,
     _choose_pg_dump_binary_path,
     _cleanup_legacy_image_generation_options,
+    _cleanup_legacy_web_search_user_settings,
+    _detect_database,
     _extract_note_content,
     _extract_oauth_sub,
     _extract_text_content,
@@ -93,6 +95,31 @@ def test_choose_pg_dump_binary_raises_when_only_older_versions_are_available():
             fallback_binary="/usr/bin/pg_dump",
             fallback_major=16,
         )
+
+
+def test_detect_database_accepts_halo_intermediate_revision():
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    for table_name in ("auth", "user", "chat", "model"):
+        sa.Table(table_name, metadata, sa.Column("id", sa.String, primary_key=True))
+    sa.Table(
+        "alembic_version",
+        metadata,
+        sa.Column("version_num", sa.String, primary_key=True),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO alembic_version (version_num) VALUES (:version_num)"
+            ),
+            {"version_num": "9b5e0d6f4a71"},
+        )
+        detection = _detect_database(conn, engine.url)
+
+    assert detection.family == "already_halo"
+    assert detection.revision == "9b5e0d6f4a71"
 
 
 def test_cleanup_legacy_image_generation_options_is_idempotent():
@@ -200,3 +227,78 @@ def test_cleanup_legacy_image_generation_options_is_idempotent():
         "background": "transparent",
     }
     assert chat_after_first["messages"] == original_chat["messages"]
+
+
+def test_cleanup_legacy_web_search_user_settings_removes_only_default_fields():
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    user_table = sa.Table(
+        "user",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("settings", sa.JSON, nullable=True),
+        sa.Column("updated_at", sa.BigInteger, nullable=True),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            user_table.insert(),
+            [
+                {
+                    "id": "legacy",
+                    "settings": {
+                        "revision": 3,
+                        "ui": {
+                            "webSearchMode": "native",
+                            "webSearch": "always",
+                            "models": ["deepseek-v4-pro"],
+                            "connections": {"openai": {"OPENAI_API_BASE_URLS": []}},
+                        },
+                    },
+                    "updated_at": 1,
+                },
+                {
+                    "id": "clean",
+                    "settings": {
+                        "revision": 1,
+                        "ui": {
+                            "models": ["gpt-4o"],
+                            "theme": "dark",
+                        },
+                    },
+                    "updated_at": 2,
+                },
+            ],
+        )
+
+        first_result = _cleanup_legacy_web_search_user_settings(conn)
+        legacy_after_first = conn.execute(
+            sa.select(user_table.c.settings).where(user_table.c.id == "legacy")
+        ).scalar_one()
+        clean_after_first = conn.execute(
+            sa.select(user_table.c.settings).where(user_table.c.id == "clean")
+        ).scalar_one()
+
+        second_result = _cleanup_legacy_web_search_user_settings(conn)
+        legacy_after_second = conn.execute(
+            sa.select(user_table.c.settings).where(user_table.c.id == "legacy")
+        ).scalar_one()
+
+    assert first_result == {"scanned_users": 2, "updated_users": 1}
+    assert second_result == {"scanned_users": 2, "updated_users": 0}
+    assert legacy_after_first == legacy_after_second
+    assert legacy_after_first == {
+        "revision": 3,
+        "ui": {
+            "models": ["deepseek-v4-pro"],
+            "connections": {"openai": {"OPENAI_API_BASE_URLS": []}},
+        },
+    }
+    assert clean_after_first == {
+        "revision": 1,
+        "ui": {
+            "models": ["gpt-4o"],
+            "theme": "dark",
+        },
+    }

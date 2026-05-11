@@ -89,7 +89,6 @@
 		resolveTemporaryChatEnabled
 	} from '$lib/utils/temporary-chat';
 	import {
-		getPreferredWebSearchMode,
 		normalizeWebSearchMode,
 		normalizeWebSearchModeSource,
 		type WebSearchMode,
@@ -97,6 +96,7 @@
 	} from '$lib/utils/web-search-mode';
 	import { getFunctionPipeRootId } from '$lib/utils/image-generation';
 	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
+	import { resolveModelBuiltinWebSearchState } from '$lib/utils/model-web-search-preference';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
 	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
 
@@ -779,13 +779,6 @@
 		return resolved.length === ids.length ? resolved : [];
 	};
 
-	const getModelBuiltinWebSearchPreference = (model: Model | null | undefined): boolean | null => {
-		const value =
-			(model as any)?.info?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL ??
-			(model as any)?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL;
-		return typeof value === 'boolean' ? value : null;
-	};
-
 	const pickModelDefaultWebSearchMode = (selectedModels: Model[]): WebSearchMode => {
 		const availableModes = new Set(
 			buildWebSearchModeOptions(
@@ -817,24 +810,11 @@
 			return null;
 		}
 
-		const fallbackMode = getPreferredDefaultWebSearchMode();
-		if (resolvedModels.length === 0) {
-			return { mode: fallbackMode, source: 'default' };
-		}
-
-		const preferences = resolvedModels.map(getModelBuiltinWebSearchPreference);
-		if (resolvedModels.length > 1 && preferences.some((value) => value === false)) {
-			return { mode: 'off', source: 'model' };
-		}
-
-		if (preferences.some((value) => value === true)) {
-			return {
-				mode: pickModelDefaultWebSearchMode(resolvedModels),
-				source: 'model'
-			};
-		}
-
-		return { mode: fallbackMode, source: 'default' };
+		return resolveModelBuiltinWebSearchState(
+			resolvedModels,
+			getPreferredDefaultWebSearchMode(),
+			pickModelDefaultWebSearchMode
+		);
 	};
 
 	// J-3-01: Reactive flag to avoid calling createMessagesList just for emptiness check in template
@@ -1163,8 +1143,7 @@
 
 	setContext('floatingChatRequestFactory', buildFloatingChatRequest);
 
-	const getPreferredDefaultWebSearchMode = (): WebSearchMode =>
-		getPreferredWebSearchMode($settings, 'off');
+	const getPreferredDefaultWebSearchMode = (): WebSearchMode => 'off';
 
 	const isChatWebSearchFeatureEnabled = () =>
 		Boolean($config?.features?.enable_halo_web_search ?? $config?.features?.enable_web_search) ||
@@ -2011,10 +1990,12 @@
 
 	$: {
 		const selectionDrivenState = getSelectionDrivenWebSearchState();
+		const shouldApplyModelOff =
+			selectionDrivenState?.source === 'model' && selectionDrivenState.mode === 'off';
 		if (
 			webSearchSelectionSyncReady &&
-			webSearchModeSource !== 'user' &&
 			selectionDrivenState &&
+			(webSearchModeSource !== 'user' || shouldApplyModelOff) &&
 			(webSearchMode !== selectionDrivenState.mode ||
 				webSearchModeSource !== selectionDrivenState.source)
 		) {
@@ -3093,7 +3074,7 @@
 		}
 
 		if (fresh && $page.url.searchParams.get('web-search') !== 'true') {
-			webSearchMode = getPreferredWebSearchMode(userSettings?.ui ?? $settings, 'off');
+			webSearchMode = getPreferredDefaultWebSearchMode();
 			webSearchModeSource = 'default';
 		}
 

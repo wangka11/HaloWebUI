@@ -1,25 +1,12 @@
 <script lang="ts">
 	import { getBackendConfig } from '$lib/apis';
 	import { setDefaultPromptSuggestions } from '$lib/apis/configs';
-	import { config, models, settings, user } from '$lib/stores';
+	import { config, settings, user } from '$lib/stores';
 	import { createEventDispatcher, onMount, getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition } from '$lib/utils';
-	import {
-		getPreferredWebSearchMode,
-		getWebSearchModeLabel,
-		normalizeWebSearchMode,
-		type WebSearchMode
-	} from '$lib/utils/web-search-mode';
 	import { translateWithDefault } from '$lib/i18n';
-	import {
-		buildWebSearchModeOptions,
-		getNativeWebSearchAvailabilityNote,
-		summarizeNativeWebSearchSupport
-	} from '$lib/utils/native-web-search';
 	const dispatch = createEventDispatcher();
 
 	const i18n = getContext('i18n');
@@ -80,8 +67,6 @@
 	let showEmojiInCall = false;
 	let voiceInterruption = false;
 	let hapticFeedback = false;
-
-	let webSearchMode: WebSearchMode = 'off';
 
 	let iframeSandboxAllowSameOrigin = false;
 	let iframeSandboxAllowForms = false;
@@ -288,36 +273,6 @@
 		});
 	};
 
-	$: nativeWebSearchCatalogSummary = summarizeNativeWebSearchSupport($models ?? []);
-	$: webSearchModeOptions = buildWebSearchModeOptions(
-		(key, options) => $i18n.t(key, options),
-		$config,
-		$models ?? []
-	);
-	$: currentWebSearchOption = webSearchModeOptions.find((option) => option.value === webSearchMode) ?? null;
-	$: currentWebSearchModeLabel =
-		currentWebSearchOption?.label ?? getWebSearchModeLabel(webSearchMode, $i18n.t.bind($i18n));
-	$: currentWebSearchModeDescription = currentWebSearchOption?.description ?? '';
-	$: webSearchAvailabilityNote = getNativeWebSearchAvailabilityNote(
-		(key, options) => $i18n.t(key, options),
-		nativeWebSearchCatalogSummary,
-		'catalog'
-	);
-	$: if (
-		(($models ?? []).length > 0 || !$config?.features?.enable_native_web_search) &&
-		!webSearchModeOptions.some((option) => option.value === webSearchMode && option.disabled !== true)
-	) {
-		webSearchMode =
-			(['auto', 'halo', 'native', 'off'] as WebSearchMode[]).find((mode) =>
-				webSearchModeOptions.some((option) => option.value === mode && option.disabled !== true)
-			) ?? 'off';
-	}
-
-	const updateWebSearchMode = async (value: unknown) => {
-		webSearchMode = normalizeWebSearchMode(value, 'off');
-		saveSettings({ webSearchMode, webSearch: null });
-	};
-
 	const toggleIframeSandboxAllowSameOrigin = async () => {
 		iframeSandboxAllowSameOrigin = !iframeSandboxAllowSameOrigin;
 		saveSettings({ iframeSandboxAllowSameOrigin });
@@ -372,7 +327,6 @@
 		defaultModelId = $settings?.models?.at(0) ?? '';
 
 		backgroundImageUrl = $settings.backgroundImageUrl ?? null;
-		webSearchMode = getPreferredWebSearchMode($settings, 'off');
 	});
 </script>
 
@@ -1023,39 +977,6 @@
 					</button>
 				</div>
 			</div>
-
-			<div>
-				<div class=" py-0.5 flex w-full justify-between">
-					<div class=" self-center text-xs">{$i18n.t('Web Search in Chat')}</div>
-
-						<div class="min-w-[10rem]">
-							<HaloSelect
-								value={webSearchMode}
-								options={webSearchModeOptions.map((option) => ({
-									value: option.value,
-									label: option.label,
-									description: option.description,
-									descriptionTone: option.descriptionTone,
-									disabled: option.disabled,
-									badge: option.badge
-								}))}
-								className="w-full"
-								on:change={(e) => {
-									updateWebSearchMode(e.detail?.value);
-								}}
-							/>
-						</div>
-					</div>
-					<div class="pt-1 text-right text-[11px] text-gray-400 space-y-1">
-						<div>{$i18n.t('Current mode')}: {currentWebSearchModeLabel}</div>
-						{#if currentWebSearchModeDescription}
-							<div>{currentWebSearchModeDescription}</div>
-						{/if}
-						{#if webSearchAvailabilityNote}
-							<div>{webSearchAvailabilityNote}</div>
-						{/if}
-					</div>
-				</div>
 
 			<div>
 				<div class=" py-0.5 flex w-full justify-between">

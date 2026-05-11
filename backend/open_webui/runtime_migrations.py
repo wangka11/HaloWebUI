@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import fcntl
 import json
@@ -11,6 +12,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -38,6 +40,7 @@ HALO_DATA_MIGRATION_TABLE = "halowebui_data_migrations"
 HALO_TARGET_HEAD = "4c8d9e0f1a2b"
 HALO_CONNECTION_METADATA_BACKFILL_KEY = "connection_metadata_backfill_v2"
 HALO_IMAGE_GENERATION_OPTIONS_CLEANUP_KEY = "image_generation_options_cleanup_v2"
+HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY = "legacy_web_search_settings_cleanup_v1"
 HALO_SOURCE_FAMILIES = {
     "c440947495f3": "owui_070_family",
     "a1b2c3d4e5f6": "owui_080_family",
@@ -395,6 +398,16 @@ def _detect_database(conn: Connection, url: URL) -> DetectionResult:
             tables=tables,
         )
 
+    if revision in _known_halo_alembic_revisions() and _verify_halo_intermediate(
+        tables
+    ):
+        return DetectionResult(
+            family="already_halo",
+            revision=revision,
+            backend=_backend_name(url),
+            tables=tables,
+        )
+
     fingerprint_matches = [
         family_name
         for family_name in (
@@ -466,6 +479,44 @@ def _verify_family(conn: Connection, family: str, tables: set[str]) -> bool:
         return required.issubset(tables) and _column_exists(conn, "user", "scim")
 
     return False
+
+
+@lru_cache(maxsize=1)
+def _known_halo_alembic_revisions() -> frozenset[str]:
+    revisions: set[str] = {HALO_TARGET_HEAD}
+    versions_dir = BACKEND_DIR / "open_webui" / "migrations" / "versions"
+    for path in versions_dir.glob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except Exception:
+            log.warning("Failed to inspect Alembic revision file: %s", path)
+            continue
+
+        for node in tree.body:
+            targets = []
+            value = None
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+                value = node.value
+
+            if not any(
+                isinstance(target, ast.Name) and target.id == "revision"
+                for target in targets
+            ):
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                revisions.add(value.value)
+            break
+
+    return frozenset(revisions)
+
+
+def _verify_halo_intermediate(tables: set[str]) -> bool:
+    required = {"alembic_version", "auth", "user", "chat", "model"}
+    return required.issubset(tables)
 
 
 def _format_unknown_database_error(
@@ -815,6 +866,44 @@ def _backfill_user_connection_metadata(conn: Connection) -> dict[str, int]:
     return {"scanned_users": scanned_users, "updated_users": updated_users}
 
 
+def _cleanup_legacy_web_search_user_settings(conn: Connection) -> dict[str, int]:
+    from open_webui.models.users import User
+
+    scanned_users = 0
+    updated_users = 0
+
+    if not _table_exists(conn, "user"):
+        return {"scanned_users": 0, "updated_users": 0}
+
+    rows = conn.execute(text('SELECT id, settings FROM "user"')).mappings().all()
+    for row in rows:
+        scanned_users += 1
+        settings_dict = _settings_payload_to_dict(row.get("settings"))
+        ui = settings_dict.get("ui")
+        if not isinstance(ui, dict):
+            continue
+
+        changed = False
+        for key in ("webSearchMode", "webSearch"):
+            if key in ui:
+                ui.pop(key, None)
+                changed = True
+
+        if not changed:
+            continue
+
+        values = {"settings": settings_dict}
+        if "updated_at" in User.__table__.c:
+            values["updated_at"] = _now()
+
+        conn.execute(
+            User.__table__.update().where(User.__table__.c.id == row["id"]).values(**values)
+        )
+        updated_users += 1
+
+    return {"scanned_users": scanned_users, "updated_users": updated_users}
+
+
 def _cleanup_legacy_image_generation_options(conn: Connection) -> dict[str, int]:
     from open_webui.utils.image_generation_options import (
         sanitize_chat_payload_image_generation_options,
@@ -924,6 +1013,15 @@ def _run_post_halo_data_migrations(conn: Connection) -> None:
         _mark_data_migration_completed(
             conn,
             HALO_IMAGE_GENERATION_OPTIONS_CLEANUP_KEY,
+            details,
+        )
+    if not _has_completed_data_migration(
+        conn, HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY
+    ):
+        details = _cleanup_legacy_web_search_user_settings(conn)
+        _mark_data_migration_completed(
+            conn,
+            HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY,
             details,
         )
 

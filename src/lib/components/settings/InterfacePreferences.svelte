@@ -47,17 +47,6 @@
 		normalizeMermaidTheme,
 		type MermaidThemeId
 	} from '$lib/utils/lobehub-chat-appearance';
-	import {
-		getPreferredWebSearchMode,
-		normalizeWebSearchMode,
-		type WebSearchMode
-	} from '$lib/utils/web-search-mode';
-	import {
-		buildWebSearchModeOptions,
-		getNativeWebSearchAvailabilityNote,
-		summarizeNativeWebSearchSupport
-	} from '$lib/utils/native-web-search';
-
 	const dispatch = createEventDispatcher();
 	const i18n: Writable<any> = getContext('i18n');
 	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
@@ -173,7 +162,6 @@
 
 	// Privacy / advanced
 	let userLocation = false;
-	let webSearchMode: WebSearchMode = 'off';
 	let iframeSandboxAllowSameOrigin = false;
 	let iframeSandboxAllowForms = false;
 
@@ -274,7 +262,6 @@
 		};
 		advanced: {
 			userLocation: boolean;
-			webSearchMode: WebSearchMode;
 			iframeSandboxAllowSameOrigin: boolean;
 			iframeSandboxAllowForms: boolean;
 			hapticFeedback: boolean;
@@ -412,33 +399,6 @@
 	const onCtrlEnterBehaviorChange = (e: CustomEvent<{ value: string }>) => {
 		ctrlEnterToSend = e.detail.value === 'ctrl_enter';
 	};
-
-	const onWebSearchChange = (e: CustomEvent<{ value: string }>) => {
-		webSearchMode = normalizeWebSearchMode(e.detail?.value, 'off');
-	};
-
-	$: nativeWebSearchCatalogSummary = summarizeNativeWebSearchSupport($models ?? []);
-	$: webSearchModeOptions = buildWebSearchModeOptions(
-		(key, options) => $i18n.t(key, options),
-		$config,
-		$models ?? []
-	);
-	$: currentWebSearchOption = webSearchModeOptions.find((option) => option.value === webSearchMode) ?? null;
-	$: currentWebSearchModeDescription = currentWebSearchOption?.description ?? '';
-	$: webSearchAvailabilityNote = getNativeWebSearchAvailabilityNote(
-		(key, options) => $i18n.t(key, options),
-		nativeWebSearchCatalogSummary,
-		'catalog'
-	);
-	$: if (
-		(($models ?? []).length > 0 || !$config?.features?.enable_native_web_search) &&
-		!webSearchModeOptions.some((option) => option.value === webSearchMode && option.disabled !== true)
-	) {
-		webSearchMode =
-			(['auto', 'halo', 'native', 'off'] as WebSearchMode[]).find((mode) =>
-				webSearchModeOptions.some((option) => option.value === mode && option.disabled !== true)
-			) ?? 'off';
-	}
 
 	const onBackgroundFileChange = async () => {
 		if (!inputFiles || inputFiles.length === 0) return;
@@ -596,7 +556,6 @@
 		},
 		advanced: {
 			userLocation,
-			webSearchMode: normalizeWebSearchMode(webSearchMode, 'off'),
 			iframeSandboxAllowSameOrigin,
 			iframeSandboxAllowForms,
 			hapticFeedback
@@ -677,7 +636,6 @@
 
 	const applyAdvancedSnapshot = (snapshot: SectionSnapshot['advanced']) => {
 		userLocation = snapshot.userLocation;
-		webSearchMode = normalizeWebSearchMode(snapshot.webSearchMode, 'off');
 		iframeSandboxAllowSameOrigin = snapshot.iframeSandboxAllowSameOrigin;
 		iframeSandboxAllowForms = snapshot.iframeSandboxAllowForms;
 		hapticFeedback = snapshot.hapticFeedback;
@@ -746,7 +704,6 @@
 		imageCompressionSize;
 		imageCompressionInChannels;
 		userLocation;
-		webSearchMode;
 		iframeSandboxAllowSameOrigin;
 		iframeSandboxAllowForms;
 		sectionSnapshot = buildSectionSnapshot();
@@ -1060,8 +1017,6 @@
 			await syncUserLocationPreference();
 			await saveSettings({
 				userLocation,
-				webSearchMode: normalizeWebSearchMode(webSearchMode, 'off'),
-				webSearch: null,
 				iframeSandboxAllowSameOrigin,
 				iframeSandboxAllowForms,
 				hapticFeedback
@@ -1244,7 +1199,6 @@
 		defaultModelId = getEffectiveDefaultModelId();
 
 		backgroundImageUrl = $settings?.backgroundImageUrl ?? null;
-		webSearchMode = getPreferredWebSearchMode($settings, 'off');
 		iframeSandboxAllowSameOrigin = $settings?.iframeSandboxAllowSameOrigin ?? false;
 		iframeSandboxAllowForms = $settings?.iframeSandboxAllowForms ?? false;
 
@@ -2552,36 +2506,6 @@
 											</div>
 											<Switch bind:state={userLocation} />
 										</div>
-											<div class="glass-item px-4 py-3 space-y-2">
-												<div class="flex items-center justify-between gap-4">
-													<div class="text-sm font-medium">
-														{$i18n.t('Web Search in Chat')}
-													</div>
-													<HaloSelect
-														value={webSearchMode}
-														options={webSearchModeOptions.map((option) => ({
-															value: option.value,
-															label: option.label,
-															description: option.description,
-															descriptionTone: option.descriptionTone,
-															disabled: option.disabled,
-															badge: option.badge
-														}))}
-														className="w-52"
-														on:change={onWebSearchChange}
-													/>
-												</div>
-												{#if currentWebSearchModeDescription}
-													<div class="text-xs leading-5 text-gray-500 dark:text-gray-400">
-														{currentWebSearchModeDescription}
-													</div>
-												{/if}
-												{#if webSearchAvailabilityNote}
-													<div class="text-xs leading-5 text-gray-500 dark:text-gray-400">
-														{webSearchAvailabilityNote}
-													</div>
-												{/if}
-											</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
 												{$i18n.t('iframe Sandbox Allow Same Origin')}
