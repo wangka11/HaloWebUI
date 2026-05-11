@@ -264,6 +264,62 @@ class TestChats(AbstractPostgresTest):
         assert data["title"] == "Clone of New Chat"
         assert data["user_id"] == "2"
 
+    def test_branch_chat_preserves_top_level_native_file(self):
+        from open_webui.models.chats import ChatForm
+
+        native_file = {
+            "type": "file",
+            "id": "file-native-1",
+            "name": "native.pdf",
+            "processing_mode": "native_file",
+            "file": {
+                "id": "file-native-1",
+                "meta": {"processing_mode": "native_file"},
+            },
+        }
+        source_chat = self.chats.insert_new_chat(
+            "2",
+            ChatForm(
+                **{
+                    "chat": {
+                        "title": "Native File Chat",
+                        "history": {
+                            "currentId": "assistant-1",
+                            "messages": {
+                                "user-1": {
+                                    "id": "user-1",
+                                    "parentId": None,
+                                    "childrenIds": ["assistant-1"],
+                                    "role": "user",
+                                    "content": "Read this file",
+                                },
+                                "assistant-1": {
+                                    "id": "assistant-1",
+                                    "parentId": "user-1",
+                                    "childrenIds": [],
+                                    "role": "assistant",
+                                    "content": "Done",
+                                    "done": True,
+                                },
+                            },
+                        },
+                        "files": [native_file],
+                    }
+                }
+            ),
+        )
+
+        with mock_webui_user(id="2"):
+            response = self.fast_api_client.post(
+                self.create_url(f"/{source_chat.id}/branch"),
+                json={"branch_point_message_id": "assistant-1"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] != source_chat.id
+        assert data["chat"]["files"] == [native_file]
+
     def test_archive_chat_by_id(self):
         chat_id = self.chats.get_chats()[0].id
         with mock_webui_user(id="2"):
