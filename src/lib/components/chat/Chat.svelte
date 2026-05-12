@@ -977,18 +977,6 @@
 			.map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')));
 	};
 
-	const collectFloatingRequestFiles = (messages) =>
-		messages
-			.flatMap((message) =>
-				(message?.files ?? []).filter((item) =>
-					['doc', 'file', 'collection', 'web_search_results'].includes(item.type)
-				)
-			)
-			.filter(
-				(item, index, array) =>
-					array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-			);
-
 	const buildFloatingRequestMessages = async (messages) => {
 		const systemPrompt =
 			params?.system || $settings?.system
@@ -1078,7 +1066,7 @@
 		const requestedWebSearchMode = canUseChatWebSearch()
 			? normalizeWebSearchMode(webSearchMode, 'off')
 			: 'off';
-		const requestFiles = collectFloatingRequestFiles(messages);
+		const requestFiles = structuredClone(chatFiles);
 		const imageGenerationActive = canUseChatImageGeneration()
 			? isImageGenerationActiveForRequest()
 			: false;
@@ -1098,7 +1086,7 @@
 				keep_alive: $settings.keepAlive ?? undefined,
 				stop: getRequestStopTokens()
 			},
-			files: requestFiles.length > 0 ? requestFiles : undefined,
+			files: Array.isArray(requestFiles) ? requestFiles : [],
 			tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
 			skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 			skill_selection_touched: skillSelectionTouched ? true : undefined,
@@ -4519,20 +4507,7 @@
 
 	const sendPromptSocket = async (_history, model, responseMessageId, _chatId) => {
 		const responseMessage = _history.messages[responseMessageId];
-		const userMessage = _history.messages[responseMessage.parentId];
-
-		let files = structuredClone(chatFiles);
-		files.push(
-			...(userMessage?.files ?? []).filter((item) =>
-				['doc', 'file', 'collection'].includes(item.type)
-			),
-			...(responseMessage?.files ?? []).filter((item) => ['web_search_results'].includes(item.type))
-		);
-		// Remove duplicates
-		files = files.filter(
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-		);
+		const files = structuredClone(chatFiles);
 
 		resetAutoScrollLock();
 		scrollToBottom();
@@ -4700,7 +4675,7 @@
 							: undefined
 				},
 
-				files: (files?.length ?? 0) > 0 ? files : undefined,
+				files: Array.isArray(files) ? files : [],
 				tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
 				skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 				skill_selection_touched: skillSelectionTouched ? true : undefined,
@@ -5406,6 +5381,19 @@
 			}
 		}
 	};
+
+	const persistChatFilesChange = async (event: CustomEvent<{ files?: any[] }> | null = null) => {
+		if (Array.isArray(event?.detail?.files)) {
+			chatFiles = event.detail.files;
+		}
+
+		if ($temporaryChatEnabled || !$chatId || $chatId === 'local') {
+			return;
+		}
+
+		await tick();
+		await saveChatHandler($chatId, history);
+	};
 </script>
 
 <svelte:head>
@@ -5667,6 +5655,7 @@
 				{eventTarget}
 				{imageGenerationEnabled}
 				{currentValvesContext}
+				on:chatFilesChange={persistChatFilesChange}
 			/>
 		</PaneGroup>
 	{:else if loading}

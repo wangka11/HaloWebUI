@@ -392,6 +392,7 @@
 							{currentValvesContext}
 							bind:chatFiles
 							bind:params
+							on:chatFilesChange
 						/>
 					{/if}
 				</div>
@@ -486,6 +487,7 @@
 									{currentValvesContext}
 									bind:chatFiles
 									bind:params
+									on:chatFilesChange
 								/>
 							{/if}
 						</div>

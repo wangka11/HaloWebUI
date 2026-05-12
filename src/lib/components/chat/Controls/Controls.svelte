@@ -414,6 +414,11 @@
 		markInteraction('advanced');
 	};
 
+	const dismissChatFile = (fileIdx: number) => {
+		chatFiles = chatFiles.filter((_, idx) => idx !== fileIdx);
+		dispatch('chatFilesChange', { files: chatFiles });
+	};
+
 	$: {
 		const effortVal = params?.reasoning_effort ?? null;
 		if (effortVal && effortVal !== 'none' && !effortSteps.some((s) => s.value === effortVal)) {
@@ -481,8 +486,7 @@
 								size={file?.size}
 								dismissible={true}
 								on:dismiss={() => {
-									chatFiles.splice(fileIdx, 1);
-									chatFiles = chatFiles;
+									dismissChatFile(fileIdx);
 								}}
 								on:click={() => {
 									console.log(file);

@@ -491,8 +491,10 @@ from open_webui.utils.chat import (
 )
 from open_webui.utils.middleware import (
     build_native_file_input_retry_notification,
+    clear_native_file_input_remote_cache,
     process_chat_payload,
     process_chat_response,
+    should_retry_native_file_inputs_after_cache_clear,
     should_retry_native_file_inputs_with_rag,
     should_retry_native_web_search_with_halo,
 )
@@ -1624,6 +1626,7 @@ async def chat_completion(
             "skill_ids": form_data.get("skill_ids", None),
             "tool_servers": form_data.pop("tool_servers", None),
             "files": form_data.get("files", None),
+            "files_provided": "files" in form_data,
             "features": form_data.get("features", None),
             "variables": form_data.get("variables", None),
             "model": model,
@@ -1686,6 +1689,44 @@ async def chat_completion(
             request, response, form_data, user, metadata, model, events, tasks
         )
     except Exception as e:
+        if original_request_body and (
+            metadata.get("native_file_input_cache_retried")
+            or should_retry_native_file_inputs_after_cache_clear(metadata, e)
+        ):
+            if not metadata.get("native_file_input_cache_retried"):
+                clear_native_file_input_remote_cache(metadata)
+
+            retry_metadata = {
+                **metadata,
+                "native_file_input_cache_retried": True,
+                "native_file_input_file_ids": [],
+                "native_file_input_parts_by_message": {},
+                "native_file_input_remote_ids_by_local_id": {},
+            }
+            retry_form_data = _rebuild_retry_form_data(
+                original_request_body,
+                retry_metadata,
+                strip_non_native_function_calling=strip_non_native_function_calling,
+            )
+
+            try:
+                retry_form_data, retry_metadata, retry_events = await process_chat_payload(
+                    request, retry_form_data, user, retry_metadata, model
+                )
+                response = await chat_completion_handler(request, retry_form_data, user)
+                return await process_chat_response(
+                    request,
+                    response,
+                    retry_form_data,
+                    user,
+                    retry_metadata,
+                    model,
+                    retry_events,
+                    tasks,
+                )
+            except Exception as retry_error:
+                e = retry_error
+
         if original_request_body and should_retry_native_file_inputs_with_rag(
             metadata, e
         ):

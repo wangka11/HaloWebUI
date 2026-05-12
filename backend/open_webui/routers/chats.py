@@ -213,16 +213,17 @@ def _collect_branch_files(
     files: list[dict] = []
     seen: set[str] = set()
 
+    if isinstance(chat_files, list):
+        for file_item in chat_files:
+            _append_branch_file(files, seen, file_item)
+        return files
+
     for message_id in chain_ids:
         message = history_messages.get(message_id)
         if not isinstance(message, dict):
             continue
 
         for file_item in message.get("files") or []:
-            _append_branch_file(files, seen, file_item)
-
-    if isinstance(chat_files, list):
-        for file_item in chat_files:
             _append_branch_file(files, seen, file_item)
 
     return files

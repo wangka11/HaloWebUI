@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import sqlalchemy as sa
 
@@ -7,11 +9,13 @@ from open_webui.runtime_migrations import (
     _cleanup_legacy_image_generation_options,
     _cleanup_legacy_web_search_user_settings,
     _detect_database,
+    _format_incomplete_state_error,
     _extract_note_content,
     _extract_oauth_sub,
     _extract_text_content,
     _extract_usage_tokens,
     _merge_meta,
+    _migrate_090_095_family,
     _parse_postgres_major_version,
 )
 
@@ -120,6 +124,116 @@ def test_detect_database_accepts_halo_intermediate_revision():
 
     assert detection.family == "already_halo"
     assert detection.revision == "9b5e0d6f4a71"
+
+
+def test_detect_database_rejects_unknown_alembic_revision_even_if_fingerprint_matches():
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    for table_name in (
+        "auth",
+        "user",
+        "group",
+        "group_member",
+        "prompt",
+        "chat",
+        "access_grant",
+        "skill",
+        "chat_message",
+        "prompt_history",
+    ):
+        sa.Table(table_name, metadata, sa.Column("id", sa.String, primary_key=True))
+    sa.Table(
+        "alembic_version",
+        metadata,
+        sa.Column("version_num", sa.String, primary_key=True),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO alembic_version (version_num) VALUES (:version_num)"
+            ),
+            {"version_num": "unknown_0_9_revision"},
+        )
+        detection = _detect_database(conn, engine.url)
+
+    assert detection.family == "unknown"
+    assert detection.revision == "unknown_0_9_revision"
+
+
+def test_detect_database_accepts_openwebui_095_revision():
+    engine = _create_minimal_openwebui_095_engine()
+
+    with engine.begin() as conn:
+        detection = _detect_database(conn, engine.url)
+
+    assert detection.family == "owui_090_095_family"
+    assert detection.revision == "a0b1c2d3e4f5"
+
+
+def test_migrate_openwebui_095_family_normalizes_halo_runtime_schema():
+    engine = _create_minimal_openwebui_095_engine()
+
+    with engine.begin() as conn:
+        _migrate_090_095_family(conn, "sqlite")
+
+        user = conn.execute(sa.text('SELECT * FROM "user" WHERE id = :id'), {"id": "u1"}).mappings().one()
+        assert user["api_key"] == "sk-old"
+        assert user["oauth_sub"] == "oidc@sub-1"
+
+        chat = conn.execute(sa.text('SELECT * FROM "chat" WHERE id = :id'), {"id": "c1"}).mappings().one()
+        assert "assistant_id" in chat.keys()
+
+        message = conn.execute(
+            sa.text('SELECT * FROM "chat_message" WHERE id = :id'),
+            {"id": "m1"},
+        ).mappings().one()
+        assert message["content"] == "hello\nworld"
+        assert message["model"] == "gpt-4.1"
+        assert message["prompt_tokens"] == 12
+        assert message["completion_tokens"] == 34
+        message_meta = message["meta"]
+        if isinstance(message_meta, str):
+            message_meta = json.loads(message_meta)
+        assert message_meta["halo_migrated_from_openwebui"]["raw_content"] == [
+            {"type": "text", "text": "hello"},
+            {"text": "world"},
+        ]
+
+        note = conn.execute(sa.text('SELECT content FROM "note" WHERE id = :id'), {"id": "n1"}).scalar_one()
+        assert note == "note body"
+
+        knowledge = conn.execute(
+            sa.text('SELECT data FROM "knowledge" WHERE id = :id'),
+            {"id": "k1"},
+        ).scalar_one()
+        if isinstance(knowledge, str):
+            knowledge = json.loads(knowledge)
+        assert knowledge["file_ids"] == ["f1"]
+
+        prompt_access = conn.execute(
+            sa.text('SELECT access_control FROM "prompt" WHERE id = :id'),
+            {"id": "p1"},
+        ).scalar_one()
+        if isinstance(prompt_access, str):
+            prompt_access = json.loads(prompt_access)
+        assert prompt_access["read"]["user_ids"] == ["u1"]
+
+
+def test_format_incomplete_state_error_includes_previous_failure_details():
+    message = _format_incomplete_state_error(
+        {
+            "backup_path": "/tmp/backup.sqlite3",
+            "details": {
+                "error_type": "OperationalError",
+                "error": "duplicate column name: access_control",
+            },
+        }
+    )
+
+    assert "/tmp/backup.sqlite3" in message
+    assert "OperationalError: duplicate column name: access_control" in message
 
 
 def test_cleanup_legacy_image_generation_options_is_idempotent():
@@ -302,3 +416,272 @@ def test_cleanup_legacy_web_search_user_settings_removes_only_default_fields():
             "theme": "dark",
         },
     }
+
+
+def _create_minimal_openwebui_095_engine():
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    sa.Table(
+        "alembic_version",
+        metadata,
+        sa.Column("version_num", sa.String, primary_key=True),
+    )
+    sa.Table(
+        "auth",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("email", sa.String),
+        sa.Column("password", sa.String),
+    )
+    sa.Table(
+        "user",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("email", sa.String),
+        sa.Column("username", sa.String),
+        sa.Column("role", sa.String),
+        sa.Column("name", sa.String),
+        sa.Column("profile_image_url", sa.Text),
+        sa.Column("info", sa.JSON),
+        sa.Column("settings", sa.JSON),
+        sa.Column("oauth", sa.JSON),
+        sa.Column("scim", sa.JSON),
+        sa.Column("last_active_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+        sa.Column("created_at", sa.BigInteger),
+    )
+    sa.Table(
+        "api_key",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("key", sa.String),
+        sa.Column("data", sa.JSON),
+        sa.Column("expires_at", sa.BigInteger),
+        sa.Column("last_used_at", sa.BigInteger),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "group",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("name", sa.String),
+        sa.Column("description", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "group_member",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("group_id", sa.String),
+        sa.Column("user_id", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "prompt",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("command", sa.String),
+        sa.Column("user_id", sa.String),
+        sa.Column("name", sa.String),
+        sa.Column("content", sa.Text),
+        sa.Column("data", sa.JSON),
+        sa.Column("meta", sa.JSON),
+        sa.Column("tags", sa.JSON),
+        sa.Column("is_active", sa.Boolean),
+        sa.Column("version_id", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "prompt_history",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("prompt_id", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+    )
+    sa.Table(
+        "chat",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("title", sa.String),
+        sa.Column("chat", sa.JSON),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+        sa.Column("share_id", sa.String),
+        sa.Column("archived", sa.Boolean),
+        sa.Column("pinned", sa.Boolean),
+        sa.Column("meta", sa.JSON),
+        sa.Column("folder_id", sa.String),
+        sa.Column("tasks", sa.JSON),
+        sa.Column("summary", sa.Text),
+        sa.Column("last_read_at", sa.BigInteger),
+    )
+    sa.Table(
+        "chat_message",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("chat_id", sa.String),
+        sa.Column("user_id", sa.String),
+        sa.Column("role", sa.String),
+        sa.Column("parent_id", sa.String),
+        sa.Column("content", sa.JSON),
+        sa.Column("output", sa.JSON),
+        sa.Column("model_id", sa.String),
+        sa.Column("files", sa.JSON),
+        sa.Column("sources", sa.JSON),
+        sa.Column("embeds", sa.JSON),
+        sa.Column("done", sa.Boolean),
+        sa.Column("status_history", sa.JSON),
+        sa.Column("error", sa.JSON),
+        sa.Column("usage", sa.JSON),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "access_grant",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("resource_type", sa.String),
+        sa.Column("resource_id", sa.String),
+        sa.Column("principal_type", sa.String),
+        sa.Column("principal_id", sa.String),
+        sa.Column("permission", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+    )
+    sa.Table(
+        "skill",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("name", sa.String),
+        sa.Column("description", sa.Text),
+        sa.Column("content", sa.Text),
+        sa.Column("meta", sa.JSON),
+        sa.Column("is_active", sa.Boolean),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "note",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("title", sa.String),
+        sa.Column("data", sa.JSON),
+        sa.Column("meta", sa.JSON),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "knowledge",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("name", sa.String),
+        sa.Column("description", sa.String),
+        sa.Column("meta", sa.JSON),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    sa.Table(
+        "knowledge_file",
+        metadata,
+        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("knowledge_id", sa.String),
+        sa.Column("file_id", sa.String),
+        sa.Column("user_id", sa.String),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(sa.text("INSERT INTO alembic_version (version_num) VALUES ('a0b1c2d3e4f5')"))
+        conn.execute(sa.text("INSERT INTO auth (id, email, password) VALUES ('u1', 'u@example.com', 'hash')"))
+        conn.execute(
+            sa.text(
+                'INSERT INTO "user" '
+                "(id, email, username, role, name, profile_image_url, info, settings, oauth, scim, last_active_at, updated_at, created_at) "
+                "VALUES (:id, :email, :username, :role, :name, :profile_image_url, :info, :settings, :oauth, :scim, :last_active_at, :updated_at, :created_at)"
+            ),
+            {
+                "id": "u1",
+                "email": "u@example.com",
+                "username": "user",
+                "role": "admin",
+                "name": "User",
+                "profile_image_url": "/user.png",
+                "info": json.dumps({}),
+                "settings": json.dumps({}),
+                "oauth": json.dumps({"oidc": {"sub": "sub-1"}}),
+                "scim": json.dumps({}),
+                "last_active_at": 1,
+                "updated_at": 1,
+                "created_at": 1,
+            },
+        )
+        conn.execute(
+            sa.text(
+                'INSERT INTO api_key (id, user_id, key, created_at, updated_at) '
+                "VALUES ('ak1', 'u1', 'sk-old', 2, 3)"
+            )
+        )
+        conn.execute(sa.text('INSERT INTO "group" (id, user_id, name, description, created_at, updated_at) VALUES ("g1", "u1", "group", "", 1, 1)'))
+        conn.execute(sa.text('INSERT INTO group_member (id, group_id, user_id, created_at, updated_at) VALUES ("gm1", "g1", "u1", 1, 1)'))
+        conn.execute(
+            sa.text(
+                'INSERT INTO prompt (id, command, user_id, name, content, data, meta, tags, is_active, version_id, created_at, updated_at) '
+                'VALUES ("p1", "/hello", "u1", "Hello", "content", "{}", "{}", "[]", 1, NULL, 1, 1)'
+            )
+        )
+        conn.execute(sa.text('INSERT INTO prompt_history (id, prompt_id, created_at) VALUES ("ph1", "p1", 1)'))
+        conn.execute(
+            sa.text(
+                'INSERT INTO chat (id, user_id, title, chat, created_at, updated_at, archived, pinned, meta, tasks, summary, last_read_at) '
+                'VALUES ("c1", "u1", "Chat", "{}", 1, 2, 0, 0, "{}", "[]", "summary", 2)'
+            )
+        )
+        conn.execute(
+            sa.text(
+                'INSERT INTO chat_message '
+                '(id, chat_id, user_id, role, parent_id, content, output, model_id, files, sources, embeds, done, status_history, error, usage, created_at, updated_at) '
+                'VALUES (:id, :chat_id, :user_id, :role, :parent_id, :content, :output, :model_id, :files, :sources, :embeds, :done, :status_history, :error, :usage, :created_at, :updated_at)'
+            ),
+            {
+                "id": "m1",
+                "chat_id": "c1",
+                "user_id": "u1",
+                "role": "assistant",
+                "parent_id": None,
+                "content": '[{"type":"text","text":"hello"},{"text":"world"}]',
+                "output": "[]",
+                "model_id": "gpt-4.1",
+                "files": "[]",
+                "sources": "[]",
+                "embeds": "[]",
+                "done": True,
+                "status_history": "[]",
+                "error": None,
+                "usage": '{"input_tokens":12,"output_tokens":34}',
+                "created_at": 1,
+                "updated_at": 2,
+            },
+        )
+        conn.execute(
+            sa.text(
+                'INSERT INTO access_grant (id, resource_type, resource_id, principal_type, principal_id, permission, created_at) '
+                'VALUES ("ag1", "prompt", "p1", "user", "u1", "read", 1)'
+            )
+        )
+        conn.execute(sa.text('INSERT INTO skill (id, user_id, name, description, content, meta, is_active, created_at, updated_at) VALUES ("s1", "u1", "Skill", "", "code", "{}", 1, 1, 1)'))
+        conn.execute(sa.text('INSERT INTO note (id, user_id, title, data, meta, created_at, updated_at) VALUES ("n1", "u1", "Note", :data, "{}", 1, 1)'), {"data": '{"content":{"md":"note body"}}'})
+        conn.execute(sa.text('INSERT INTO knowledge (id, user_id, name, description, meta, created_at, updated_at) VALUES ("k1", "u1", "KB", "", "{}", 1, 1)'))
+        conn.execute(sa.text('INSERT INTO knowledge_file (id, knowledge_id, file_id, user_id, created_at, updated_at) VALUES ("kf1", "k1", "f1", "u1", 1, 1)'))
+
+    return engine

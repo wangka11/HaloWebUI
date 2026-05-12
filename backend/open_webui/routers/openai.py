@@ -96,6 +96,19 @@ NATIVE_FILE_INPUT_STATUS_UPSTREAM_REJECTED = "upstream_rejected"
 _NATIVE_FILE_INPUT_PROBE_TTL_SECONDS = 60
 _NATIVE_FILE_INPUT_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CUSTOM_PARAM_FORBIDDEN_KEYS = {"model", "messages", "input", "stream"}
+_NATIVE_FILE_INPUT_STALE_FILE_ID_PATTERNS = (
+    "file not found",
+    "file_not_found",
+    "invalid file_id",
+    "invalid_file_id",
+    "invalid file id",
+    "invalid_file",
+    "no such file",
+    "could not find file",
+    "file id does not exist",
+    "file_id does not exist",
+    "unknown file",
+)
 
 
 def _is_official_openai_connection(url: str) -> bool:
@@ -763,6 +776,21 @@ def _set_cached_openai_file_id(
     return meta
 
 
+def _clear_cached_openai_file_id(file_id: str, file_meta: dict, conn_key: str) -> dict:
+    meta = dict(file_meta or {})
+    provider_meta = dict(meta.get("openai") or {})
+    files_map = dict(provider_meta.get("files") or {})
+
+    if conn_key not in files_map:
+        return meta
+
+    files_map.pop(conn_key, None)
+    provider_meta["files"] = files_map
+    meta["openai"] = provider_meta
+    Files.update_file_metadata_by_id(file_id, meta)
+    return meta
+
+
 async def _upload_file_to_openai(
     *,
     base_url: str,
@@ -851,6 +879,52 @@ def _extract_upstream_error_detail(status: int, body) -> str:
 
     text = _truncate_text(_stringify_upstream_body(body), 1200).strip()
     return text if text else f"HTTP Error: {status}"
+
+
+def _looks_like_stale_native_file_id_error(body) -> bool:
+    text = _stringify_upstream_body(body).lower()
+    if not text:
+        return False
+    if "input_file" not in text and "file_id" not in text and "file id" not in text:
+        return False
+    return any(pattern in text for pattern in _NATIVE_FILE_INPUT_STALE_FILE_ID_PATTERNS)
+
+
+def _clear_native_file_input_cache_for_request(metadata: Any) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    if metadata.get("native_file_input_cache_retried"):
+        return []
+
+    conn_key = str(metadata.get("native_file_input_connection_cache_key") or "").strip()
+    if not conn_key:
+        return []
+
+    cleared: list[str] = []
+    for file_id in metadata.get("native_file_input_file_ids") or []:
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            continue
+        file_obj = Files.get_file_by_id(file_id)
+        if not file_obj:
+            continue
+
+        meta = dict(file_obj.meta or {})
+        provider_meta = dict(meta.get("openai") or {})
+        files_map = dict(provider_meta.get("files") or {})
+        if conn_key not in files_map:
+            continue
+
+        files_map.pop(conn_key, None)
+        provider_meta["files"] = files_map
+        meta["openai"] = provider_meta
+        Files.update_file_metadata_by_id(file_id, meta)
+        cleared.append(file_id)
+
+    if cleared:
+        metadata["native_file_input_cache_retried"] = True
+
+    return cleared
 
 
 def _coerce_model_list_entry(item) -> Optional[dict]:
@@ -2433,6 +2507,8 @@ async def generate_chat_completion(
 
     url = (url or "").rstrip("/")
     key = key or ""
+    native_retry_metadata = metadata if isinstance(metadata, dict) else {}
+    native_cache_retry_detail = "Native file input cache was invalidated; retrying upload."
 
     # Local-only flags (do not forward as-is).
     native_web_search = payload.pop("native_web_search", False) is True
@@ -2626,6 +2702,16 @@ async def generate_chat_completion(
                 if r.status >= 400:
                     response = await _safe_read_upstream_body(r)
 
+            if native_file_inputs and _looks_like_stale_native_file_id_error(response):
+                cleared_file_ids = _clear_native_file_input_cache_for_request(
+                    native_retry_metadata
+                )
+                if cleared_file_ids:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=native_cache_retry_detail,
+                    )
+
             error_message = _get_chat_upstream_error_message(
                 status=r.status, body=response
             )
@@ -2709,6 +2795,18 @@ async def generate_chat_completion(
                             response = await _safe_read_upstream_body(r)
 
                 if r.status >= 400:
+                    if native_file_inputs and _looks_like_stale_native_file_id_error(
+                        response
+                    ):
+                        cleared_file_ids = _clear_native_file_input_cache_for_request(
+                            native_retry_metadata
+                        )
+                        if cleared_file_ids:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=native_cache_retry_detail,
+                            )
+
                     message = _format_responses_upstream_error(
                         request_url=request_url, status=r.status, body=response
                     )

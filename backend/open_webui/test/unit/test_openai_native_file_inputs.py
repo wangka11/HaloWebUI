@@ -231,6 +231,208 @@ def test_prepare_openai_native_file_inputs_uploads_pdf_via_storage_provider(monk
     }
 
 
+def test_prepare_openai_native_file_inputs_reuses_chat_file_on_followup(monkeypatch):
+    file_id = "file_local_followup"
+    file_item = {"type": "file", "id": file_id, "processing_mode": "native_file"}
+    file_obj = SimpleNamespace(
+        id=file_id,
+        path=f"/data/uploads/{file_id}_demo.pdf",
+        filename="demo.pdf",
+        meta={
+            "content_type": "application/pdf",
+            "processing_mode": "native_file",
+        },
+    )
+
+    monkeypatch.setattr(
+        middleware.Files,
+        "get_file_by_id",
+        lambda current_file_id: file_obj if current_file_id == file_id else None,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_get_openai_user_config",
+        lambda _user: (["https://api.openai.com/v1"], ["sk-test"], [{}]),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_openai_connection_by_model_id",
+        lambda *_args, **_kwargs: (
+            0,
+            "https://api.openai.com/v1",
+            "sk-test",
+            {"use_responses_api": True},
+        ),
+    )
+    monkeypatch.setattr(middleware, "_should_use_responses_api", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(middleware, "_get_openai_file_cache_key", lambda *_args, **_kwargs: "conn-1")
+    monkeypatch.setattr(middleware, "_get_cached_openai_file_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(middleware, "_set_cached_openai_file_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        middleware.Storage,
+        "get_file",
+        lambda path: f"/tmp/{path.rsplit('/', 1)[-1]}",
+    )
+
+    async def fake_upload_file_to_openai(**_kwargs):
+        return "remote-file-followup"
+
+    monkeypatch.setattr(middleware, "_upload_file_to_openai", fake_upload_file_to_openai)
+
+    request = SimpleNamespace(state=SimpleNamespace(connection_user=None))
+    user = SimpleNamespace(id="user-1")
+    form_data = {
+        "model": "gpt-5.4",
+        "messages": [
+            {
+                "role": "user",
+                "content": "文章标题是什么",
+                "files": [dict(file_item)],
+            },
+            {"role": "assistant", "content": "标题是 ..."},
+            {
+                "role": "user",
+                "content": "介绍文章主要内容",
+            },
+        ],
+    }
+    metadata = {"files": [dict(file_item)]}
+
+    asyncio.run(
+        middleware._prepare_openai_native_file_inputs(
+            request,
+            form_data,
+            metadata,
+            user,
+            {"id": "gpt-5.4", "owned_by": "openai"},
+        )
+    )
+
+    assert metadata["native_file_input_file_ids"] == [file_id]
+    assert metadata["native_file_input_parts_by_message"] == {
+        "2": [{"type": "input_file", "file_id": "remote-file-followup"}],
+    }
+
+
+def test_prepare_openai_native_file_inputs_ignores_historical_file_when_current_files_empty(monkeypatch):
+    file_id = "file_removed"
+    file_item = {"type": "file", "id": file_id, "processing_mode": "native_file"}
+
+    monkeypatch.setattr(
+        middleware.Files,
+        "get_file_by_id",
+        lambda _current_file_id: None,
+    )
+
+    request = SimpleNamespace(state=SimpleNamespace(connection_user=None))
+    user = SimpleNamespace(id="user-1")
+    form_data = {
+        "model": "gpt-5.4",
+        "messages": [
+            {
+                "role": "user",
+                "content": "文章标题是什么",
+                "files": [dict(file_item)],
+            },
+            {"role": "assistant", "content": "标题是 ..."},
+            {
+                "role": "user",
+                "content": "不用这个文件了",
+            },
+        ],
+    }
+    metadata = {"files": [], "files_provided": True}
+
+    asyncio.run(
+        middleware._prepare_openai_native_file_inputs(
+            request,
+            form_data,
+            metadata,
+            user,
+            {"id": "gpt-5.4", "owned_by": "openai"},
+        )
+    )
+
+    assert metadata.get("native_file_input_file_ids") is None
+    assert metadata.get("native_file_input_parts_by_message") is None
+
+
+def test_prepare_openai_native_file_inputs_survives_truncated_history(monkeypatch):
+    file_id = "file_truncated"
+    file_item = {"type": "file", "id": file_id, "processing_mode": "native_file"}
+    file_obj = SimpleNamespace(
+        id=file_id,
+        path=f"/data/uploads/{file_id}_demo.pdf",
+        filename="demo.pdf",
+        meta={
+            "content_type": "application/pdf",
+            "processing_mode": "native_file",
+        },
+    )
+
+    monkeypatch.setattr(
+        middleware.Files,
+        "get_file_by_id",
+        lambda current_file_id: file_obj if current_file_id == file_id else None,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_get_openai_user_config",
+        lambda _user: (["https://api.openai.com/v1"], ["sk-test"], [{}]),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_openai_connection_by_model_id",
+        lambda *_args, **_kwargs: (
+            0,
+            "https://api.openai.com/v1",
+            "sk-test",
+            {"use_responses_api": True},
+        ),
+    )
+    monkeypatch.setattr(middleware, "_should_use_responses_api", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(middleware, "_get_openai_file_cache_key", lambda *_args, **_kwargs: "conn-1")
+    monkeypatch.setattr(middleware, "_get_cached_openai_file_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(middleware, "_set_cached_openai_file_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        middleware.Storage,
+        "get_file",
+        lambda path: f"/tmp/{path.rsplit('/', 1)[-1]}",
+    )
+
+    async def fake_upload_file_to_openai(**_kwargs):
+        return "remote-file-truncated"
+
+    monkeypatch.setattr(middleware, "_upload_file_to_openai", fake_upload_file_to_openai)
+
+    request = SimpleNamespace(state=SimpleNamespace(connection_user=None))
+    user = SimpleNamespace(id="user-1")
+    form_data = {
+        "model": "gpt-5.4",
+        "messages": [
+            {
+                "role": "user",
+                "content": "继续总结这个文件",
+            }
+        ],
+    }
+    metadata = {"files": [dict(file_item)], "files_provided": True}
+
+    asyncio.run(
+        middleware._prepare_openai_native_file_inputs(
+            request,
+            form_data,
+            metadata,
+            user,
+            {"id": "gpt-5.4", "owned_by": "openai"},
+        )
+    )
+
+    assert metadata["native_file_input_parts_by_message"] == {
+        "0": [{"type": "input_file", "file_id": "remote-file-truncated"}],
+    }
+
+
 def test_get_native_file_input_capability_classifies_connection_policy():
     capability = _get_native_file_input_capability(
         "https://proxy.example.com/v1",
@@ -505,3 +707,125 @@ def test_ensure_requested_chat_file_modes_prefers_local_before_remote(monkeypatc
     assert calls[0]["allow_provider_local_fallback"] is False
     assert events
     assert "local document parsing" in events[0]["data"]["content"]
+
+
+def test_native_file_cache_retry_detection_and_clear(monkeypatch):
+    file_id = "file_cached_stale"
+    file_obj = SimpleNamespace(
+        id=file_id,
+        meta={
+            "content_type": "application/pdf",
+            "openai": {
+                "files": {
+                    "conn-1": {
+                        "file_id": "remote-stale",
+                        "uploaded_at": 1,
+                    }
+                }
+            },
+        },
+    )
+    updates = []
+
+    monkeypatch.setattr(
+        middleware.Files,
+        "get_file_by_id",
+        lambda current_file_id: file_obj if current_file_id == file_id else None,
+    )
+    monkeypatch.setattr(
+        middleware.Files,
+        "update_file_metadata_by_id",
+        lambda current_file_id, meta: updates.append((current_file_id, meta)),
+    )
+
+    metadata = {
+        "native_file_input_file_ids": [file_id],
+        "native_file_input_connection_cache_key": "conn-1",
+    }
+    error = "Native file inputs request failed. input_file file_id file not found"
+
+    assert middleware.should_retry_native_file_inputs_after_cache_clear(metadata, error)
+    assert middleware.clear_native_file_input_remote_cache(metadata) == [file_id]
+    assert updates == [
+        (
+            file_id,
+            {
+                "content_type": "application/pdf",
+                "openai": {"files": {}},
+            },
+        )
+    ]
+
+
+def test_explicit_files_empty_is_not_replaced_by_message_history(monkeypatch):
+    file_id = "file_removed_process"
+    file_item = {"type": "file", "id": file_id, "processing_mode": "native_file"}
+
+    async def noop_prepare(*_args, **_kwargs):
+        return None
+
+    async def noop_ensure(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(middleware, "_prepare_openai_native_file_inputs", noop_prepare)
+    monkeypatch.setattr(middleware, "_ensure_requested_chat_file_modes", noop_ensure)
+    monkeypatch.setattr(middleware, "get_event_emitter", lambda _metadata: None)
+    monkeypatch.setattr(middleware, "get_event_call", lambda _metadata: None)
+    monkeypatch.setattr(middleware, "get_task_model_id", lambda *_args, **_kwargs: "task-model")
+    monkeypatch.setattr(middleware, "get_sorted_filters", lambda _model: [])
+    monkeypatch.setattr(
+        middleware,
+        "process_filter_functions",
+        lambda **kwargs: asyncio.sleep(0, (kwargs["form_data"], {})),
+    )
+    monkeypatch.setattr(middleware, "get_selected_skill_context", lambda *_args, **_kwargs: {
+        "resolved_ids": [],
+        "requested_ids": [],
+        "prompt_skills": [],
+        "runnable_skills": [],
+    })
+    monkeypatch.setattr(middleware, "build_skill_system_prompt", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(middleware, "build_skill_tool_context", lambda *_args, **_kwargs: [])
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(direct=False, MODELS={}),
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                MODELS={},
+                config=SimpleNamespace(
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL="",
+                    ENABLE_IMAGE_GENERATION=False,
+                    USER_PERMISSIONS={},
+                    ENABLE_WEB_SEARCH=False,
+                    ENABLE_NATIVE_WEB_SEARCH=False,
+                    FILE_PROCESSING_DEFAULT_MODE="native_file",
+                    DOCUMENT_PROVIDER="local_default",
+                ),
+            )
+        ),
+    )
+    user = SimpleNamespace(id="user-1", email="u@example.com", name="User", role="user")
+    form_data = {
+        "model": "gpt-5.4",
+        "messages": [
+            {"role": "user", "content": "read", "files": [dict(file_item)]},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "now no file"},
+        ],
+        "files": [],
+    }
+    metadata = {"files": [], "files_provided": True}
+
+    processed, processed_metadata, _events = asyncio.run(
+        middleware.process_chat_payload(
+            request,
+            form_data,
+            user,
+            metadata,
+            {"id": "gpt-5.4", "owned_by": "openai", "info": {"meta": {}}},
+        )
+    )
+
+    assert processed_metadata["files"] == []
+    assert processed["metadata"]["files"] == []
